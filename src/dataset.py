@@ -213,7 +213,7 @@ class SuzukiDataset(Dataset):
         super().__init__(class_thresholds, for_conventional_models)
         self.keepPhBr = keepPhBr
 
-        path8b = "data/suzuki/008b_final_report.csv"
+        path8b = "data/008b_final_report.csv"
         if from_notebook:
             path8b = "../" + path8b
         # First need to filter off other reaction conditions from 8b
@@ -239,7 +239,7 @@ class SuzukiDataset(Dataset):
         if not from_notebook:
             dfs = [df_8b_interest.iloc[:, [1, 2, 3, 4, -1]]] + [
                 pd.read_csv(
-                    f"data/suzuki/{x}_final_report.csv",
+                    f"data/{x}_final_report.csv",
                     usecols=[
                         "reactant_1&name",
                         "reactant_1&smiles",
@@ -253,7 +253,7 @@ class SuzukiDataset(Dataset):
         else:
             dfs = [df_8b_interest.iloc[:, [1, 2, 3, 4, -1]]] + [
                 pd.read_csv(
-                    f"../data/suzuki/{x}_final_report.csv",
+                    f"../data/{x}_final_report.csv",
                     usecols=[
                         "reactant_1&name",
                         "reactant_1&smiles",
@@ -344,9 +344,9 @@ class SuzukiDataset(Dataset):
 
         # Preparing boronic descriptor arrays
         if not from_notebook:
-            boronics_descriptors = pd.read_csv("data/suzuki/boronic_descriptors.csv")
+            boronics_descriptors = pd.read_csv("data/boronic_descriptors.csv")
         else:
-            boronics_descriptors = pd.read_csv("../data/suzuki/boronic_descriptors.csv")
+            boronics_descriptors = pd.read_csv("../data/boronic_descriptors.csv")
         boronic_desc = np.zeros(
             (boronics_descriptors.shape[0], boronics_descriptors.shape[1] - 3)
         )
@@ -357,9 +357,9 @@ class SuzukiDataset(Dataset):
         self.bb_descriptors = boronic_desc
 
         if not from_notebook:
-            halide_descriptors = pd.read_csv("data/suzuki/halide_descriptors.csv")
+            halide_descriptors = pd.read_csv("data/halide_descriptors.csv")
         else:
-            halide_descriptors = pd.read_csv("../data/suzuki/halide_descriptors.csv")
+            halide_descriptors = pd.read_csv("../data/halide_descriptors.csv")
         halide_desc = np.zeros(
             (halide_descriptors.shape[0], halide_descriptors.shape[1] - 1)
         )

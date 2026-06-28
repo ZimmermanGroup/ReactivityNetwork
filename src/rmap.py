@@ -106,7 +106,7 @@ class ReactivityMap:
             score = score[0]
         return score
 
-    def get_similarity_matrix(self, imputation=None, gephi_filename=None):
+    def get_similarity_matrix(self, imputation=None, gephi_filename=None, tanimoto=False):
         """Prepares an adjacency matrix in terms of reactivity similarity scores.
         Saves excel files to be processed in gephi for further visualization, if desired.
         Since the similarity threshold can be controlled in gephi, we simply get all reactivity similarity values between boronics.
@@ -121,6 +121,8 @@ class ReactivityMap:
             • core : filling the missing value with average value of reactivity classes IN THE SAME CORE
             • similarity : find the most similar boronic using the outcomes from cores that overlap
             • rfc : fill in the empty ones using a random forest classifier.
+        tanimoto : bool
+            Whether to compute the Tanimoto similarity between the building blocks. If false, will use the reactivity similarity.
 
         Returns
         -------
@@ -142,7 +144,7 @@ class ReactivityMap:
 
         imputed_array = self._impute_missing_values(imputation, train_bb_smiles)
         similarity_matrix = self._calculate_similarity(
-            imputed_array, nodes, edges, gephi_filename, train_bb_smiles
+            imputed_array, nodes, edges, gephi_filename, train_bb_smiles, tanimoto=tanimoto
         )
 
         self.similarity_matrix = similarity_matrix
@@ -300,8 +302,18 @@ class ReactivityMap:
             assert np.isnan(imputed_array[row_ind, col_ind])
             imputed_array[row_ind, col_ind] = y_pred[num]
 
+    def _change_Bpin_to_BOH2_get_smiles(self, Bpin_smiles):
+        fg_handle = Chem.MolFromSmarts("[#5]-1-[#8]C([#6])([#6])C([#6])([#6])[#8]-1")
+        mod_mol = Chem.ReplaceSubstructs(
+            Chem.MolFromSmiles(Bpin_smiles), 
+            fg_handle, 
+            Chem.MolFromSmiles("B(O)O"),
+            replaceAll=True
+        )
+        return Chem.MolToSmiles(mod_mol[0])
+
     def _calculate_similarity(
-        self, imputed_array, nodes, edges, gephi_filename, train_bb_smiles
+        self, imputed_array, nodes, edges, gephi_filename, train_bb_smiles, tanimoto=False
     ):
         """Computes reactivity similarity between all pairs of building blocks.
 
@@ -317,6 +329,8 @@ class ReactivityMap:
             Path to the gephi excels.
         train_bb_smiles : list of str
             List of SMILES strings of the boronic building blocks in the training dataset.
+        tanimoto : bool
+            Whether to compute the Tanimoto similarity between the building blocks. If false, will use the reactivity similarity.
 
         Returns
         -------
@@ -325,13 +339,29 @@ class ReactivityMap:
         """
         similarity_matrix = np.identity(len(train_bb_smiles))
         n_train_bb = len(train_bb_smiles)
+        if tanimoto:
+            fpgen = rdFingerprintGenerator.GetMorganGenerator(radius=3, fpSize=2048)
+            acid_smiles = []
+            # First convert all Bpin's into B(OH)2 to compare only the substructure that will contribute to the product.
+            for i, smiles in enumerate(train_bb_smiles) : 
+                mol = Chem.MolFromSmiles(smiles)
+                if mol.HasSubstructMatch(Chem.MolFromSmarts("[#5]-1-[#8]C([#6])([#6])C([#6])([#6])[#8]-1")) :
+                    acid_smiles.append(self._change_Bpin_to_BOH2_get_smiles(smiles))
+                elif mol.HasSubstructMatch(Chem.MolFromSmarts("[OH][#5][OH]")) :
+                    acid_smiles.append(smiles)
+            fps = [fpgen.GetCountFingerprint(Chem.MolFromSmiles(smiles)) for smiles in acid_smiles] # Count
         for i, smiles in enumerate(train_bb_smiles):
-            weights = [
-                self._compute_reactivity_similarity(
-                    imputed_array[:, i], imputed_array[:, x]
-                )
-                for x in range(i + 1, n_train_bb)
-            ]
+            if tanimoto:
+                weights = list(DataStructs.BulkTanimotoSimilarity(
+                    fps[i], fps[i + 1 : n_train_bb]
+                ))
+            else :
+                weights = [
+                    self._compute_reactivity_similarity(
+                        imputed_array[:, i], imputed_array[:, x]
+                    )
+                    for x in range(i + 1, n_train_bb)
+                ]
             if gephi_filename is not None:
                 self._update_nodes(nodes, i, smiles, imputed_array)
                 self._update_edges(edges, i, weights, n_train_bb)
@@ -364,7 +394,7 @@ class ReactivityMap:
         nodes["Id"].append(self.train_bb_inds[index] + 1)
         nodes["Smiles"].append(smiles)
         boronics_descriptors = pd.read_csv(
-            "../data/relay_suzuki/boronic_descriptors.csv",
+            "../data/boronic_descriptors.csv",
             usecols=["reactant_2&smiles", "Centroid", "Cluster"],
         )
         for j, core_id in enumerate(self.source_core_inds):

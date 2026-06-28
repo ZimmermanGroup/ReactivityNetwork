@@ -3,9 +3,11 @@ from dataset import *
 from rmap import *
 from tqdm import tqdm
 from sklearn.semi_supervised import LabelPropagation
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, LeaveOneOut
 import joblib
 import torch
 import torch.nn as nn
@@ -69,7 +71,7 @@ def parse_args():
     )
     parser.add_argument(
         "--model",
-        choices=["rmap", "rfc_combined", "rfc_target", "gcn", "baseline"],
+        choices=["rmap", "rfc_combined", "rfc_target", "gcn", "baseline", "knn", "svm"],
         help="Which algorithm to use.",
     )
     parser.add_argument(
@@ -77,6 +79,12 @@ def parse_args():
         type=bool,
         action=argparse.BooleanOptionalAction,
         help="Whether to use highly reactive cores in the training dataset to build Reactivity Map for LP.",
+    )
+    parser.add_argument(
+        "--tanimoto",
+        type=bool,
+        action=argparse.BooleanOptionalAction,
+        help="Whether to use Tanimoto similarity, instead of reactivity similarity, to build the Reactivity Map for LP.",
     )
     args = parser.parse_args()
     return args
@@ -92,13 +100,18 @@ class Evaluator:
         self.parser = parser
         self.dataset = SuzukiDataset()
         if self.parser.feature == "desc":
-            self.result_filename = f"saved_results/{self.dataset}/{self.parser.target_core}/{self.parser.n1_strategy}_{self.parser.n1}_{self.parser.model}.joblib"
+            self.result_filename = f"saved_results/{self.dataset}/{self.parser.target_core}/{self.parser.n1_strategy}_{self.parser.n1}_{self.parser.model}"
         else:
-            self.result_filename = f"saved_results/{self.dataset}/{self.parser.target_core}/{self.parser.n1_strategy}_{self.parser.n1}_{self.parser.model}_{self.parser.feature}.joblib"
+            self.result_filename = f"saved_results/{self.dataset}/{self.parser.target_core}/{self.parser.n1_strategy}_{self.parser.n1}_{self.parser.model}_{self.parser.feature}"
         if self.parser.subgraph:
-            self.result_filename = self.result_filename.replace(
-                ".joblib", "_subgraph.joblib"
-            )
+            self.result_filename += "_subgraph"
+        elif self.parser.tanimoto :
+            self.result_filename += "_tanimoto"
+        if self.parser.n_test != 14 :
+            self.result_filename += f"_ntest{self.parser.n_test}"
+        if self.parser.n_bootstrap != 20 :
+            self.result_filename += f"_nbootstrap{self.parser.n_bootstrap}"
+        self.result_filename += ".joblib"
         self._mkdir("saved_results")
         self._mkdir(f"saved_results/{self.dataset}")
         self._mkdir(f"saved_results/{self.dataset}/{self.parser.target_core}")
@@ -185,7 +198,7 @@ class Evaluator:
         for i in tqdm(range(self.parser.n_bootstrap)):
             np.random.seed(42 + i)
 
-            # Randomly selecting 20% out as the test set
+            # Randomly selecting a few BBs out as the test set, as specified through the n_test keyword
             test_bb_inds = np.sort(
                 np.random.choice(
                     bb_ind_list,
@@ -211,9 +224,21 @@ class Evaluator:
             elif self.parser.model == "rmap":
                 (
                     all_proba,
-                    all_remaining_inds,  # TODO need to check if other indices are within train_bb_inds
+                    all_remaining_inds,  
                     all_num_desired_in_first_batch,
                 ) = self.evaluate_LP(train_bb_inds, test_bb_inds)
+            elif self.parser.model == "knn":
+                (
+                    all_proba,
+                    all_remaining_inds,
+                    all_num_desired_in_first_batch,
+                ) = self.evaluate_knn(train_bb_inds, test_bb_inds)
+            elif self.parser.model == "svm":
+                (
+                    all_proba,
+                    all_remaining_inds,
+                    all_num_desired_in_first_batch,
+                ) = self.evaluate_svm(train_bb_inds, test_bb_inds)
             elif self.parser.model == "gcn":
                 (
                     all_proba,
@@ -432,7 +457,7 @@ class Evaluator:
         rmap = ReactivityMap(
             source_cores, self.target_core_ind, test_bb_inds, self.dataset, mask=None
         )
-        _ = rmap.get_similarity_matrix()
+        _ = rmap.get_similarity_matrix(tanimoto=self.parser.tanimoto)
         all_selected_inds = self.select_first_batch(train_bb_inds, test_bb_inds)
         all_rmap_proba = []
         all_remaining_inds = []
@@ -447,8 +472,12 @@ class Evaluator:
                     >= self.desired_class
                 )
             )
+            if self.parser.tanimoto :
+                threshold=0.33
+            else :
+                threshold=0.82
             adj = rmap._similarity_matrix_to_adjacency_matrix(
-                rmap.get_similarity_matrix(), 0.82
+                rmap.get_similarity_matrix(tanimoto=self.parser.tanimoto), threshold
             )  # self.parser.threshold)
             adj += 0.001  # To prevent division error
 
@@ -471,6 +500,132 @@ class Evaluator:
             lp_pred_proba = raw_pred_proba[:, -1]
             all_rmap_proba.append(lp_pred_proba[rmap_remaining_inds])
         return all_rmap_proba, all_remaining_inds, all_num_desired_in_first_batch
+
+    def evaluate_knn(self, train_bb_inds, test_bb_inds):
+        """Makes predictions with kNN using the reactivity similarity matrix.
+
+        Parameters
+        ----------
+        train_bb_inds : list of ints
+            Indices of building blocks selected as training data.
+        test_bb_inds : list of ints
+            Indices of building blocks left out as test data.
+
+        Returns
+        -------
+        all_knn_proba: list of np.ndarrays of shape (n_remaining_bb_inds, )
+            Predicted probability values of desired reactivity class across all selection folds.
+        all_remaining_inds : list of list of ints
+            Indices of training building blocks that remain after selecting the first batch of bbs.
+        """
+        if self.parser.subgraph:
+            source_cores = [x for x in [0, 1, 3, 7, 8] if x != self.target_core_ind]
+        else:
+            source_cores = None
+        rmap = ReactivityMap(
+            source_cores, self.target_core_ind, test_bb_inds, self.dataset, mask=None
+        )
+        dist_mat = 1-rmap.get_similarity_matrix()
+        all_selected_inds = self.select_first_batch(train_bb_inds, test_bb_inds)
+        all_knn_proba = []
+        all_remaining_inds = []
+        all_num_desired_in_first_batch = []
+        for rmap_selected_inds in all_selected_inds:
+            rmap_remaining_inds = [
+                x for x in range(len(train_bb_inds)) if (x not in rmap_selected_inds)
+            ]  # Indices within the train_bb_inds
+            all_remaining_inds.append(rmap_remaining_inds)
+            all_num_desired_in_first_batch.append(
+                sum(
+                    rmap.target_reactivity_array[rmap_selected_inds]
+                    >= self.desired_class
+                )
+            )
+            X_train = dist_mat[np.ix_(rmap_selected_inds, rmap_selected_inds)]
+            y_train = self._binarize_reactivity_classes(
+                rmap.target_reactivity_array[
+                    rmap_selected_inds
+                ]
+            )  # Simulating we obtained results of the first batch BBs with the new core
+            if np.sum(y_train) not in [0, len(y_train)]:
+                neigh = GridSearchCV(
+                    KNeighborsClassifier(weights="distance", metric="precomputed"),
+                    param_grid={
+                        "n_neighbors": [1, 2, 3],
+                    },
+                    scoring="accuracy",
+                    n_jobs=-1,
+                    cv=LeaveOneOut(),
+                )
+                neigh.fit(X_train, y_train)
+                X_remaining = dist_mat[np.ix_(rmap_remaining_inds, rmap_selected_inds)]
+                raw_pred_proba = neigh.predict_proba(X_remaining)
+                knn_pred_proba = raw_pred_proba[:, -1]
+            else :
+                knn_pred_proba = np.zeros(len(rmap_remaining_inds)) if np.sum(y_train) == 0 else np.ones(len(rmap_remaining_inds))
+            all_knn_proba.append(knn_pred_proba)
+        return all_knn_proba, all_remaining_inds, all_num_desired_in_first_batch
+
+    def evaluate_svm(self, train_bb_inds, test_bb_inds):
+        """Makes predictions with SVM using the reactivity similarity matrix.
+
+        Parameters
+        ----------
+        train_bb_inds : list of ints
+            Indices of building blocks selected as training data.
+        test_bb_inds : list of ints
+            Indices of building blocks left out as test data.
+
+        Returns
+        -------
+        all_svm_proba: list of np.ndarrays of shape (n_remaining_bb_inds, )
+            Predicted probability values of desired reactivity class across all selection folds.
+        all_remaining_inds : list of list of ints
+            Indices of training building blocks that remain after selecting the first batch of bbs.
+        """
+        if self.parser.subgraph:
+            source_cores = [x for x in [0, 1, 3, 7, 8] if x != self.target_core_ind]
+        else:
+            source_cores = None
+        rmap = ReactivityMap(
+            source_cores, self.target_core_ind, test_bb_inds, self.dataset, mask=None
+        )
+        _ = rmap.get_similarity_matrix(tanimoto=self.parser.tanimoto)
+        all_selected_inds = self.select_first_batch(train_bb_inds, test_bb_inds)
+        all_svm_proba = []
+        all_remaining_inds = []
+        all_num_desired_in_first_batch = []
+        for rmap_selected_inds in all_selected_inds:
+            rmap_remaining_inds = [
+                x for x in range(len(train_bb_inds)) if (x not in rmap_selected_inds)
+            ]  # Indices within the train_bb_inds
+            all_remaining_inds.append(rmap_remaining_inds)
+            all_num_desired_in_first_batch.append(
+                sum(
+                    rmap.target_reactivity_array[rmap_selected_inds]
+                    >= self.desired_class
+                )
+            )
+            adj = rmap._similarity_matrix_to_adjacency_matrix(
+                rmap.get_similarity_matrix(), 0.82
+            )  # self.parser.threshold)
+            adj += 0.001  # To prevent division error
+            X_train = adj[np.ix_(rmap_selected_inds, rmap_selected_inds)]
+            y_train = self._binarize_reactivity_classes(
+                rmap.target_reactivity_array[
+                    rmap_selected_inds
+                ]
+            )  # Simulating we obtained results of the first batch BBs with the new core
+            if np.sum(y_train) not in [0, len(y_train)]:
+                svm = SVC(kernel="precomputed", probability=True, random_state=42)
+                svm.fit(X_train, y_train)
+                X_test = adj[np.ix_(rmap_remaining_inds, rmap_selected_inds)]
+                raw_pred_proba = svm.predict_proba(X_test)
+                svm_pred_proba = raw_pred_proba[:, -1]
+            else :
+                svm_pred_proba = np.zeros(len(rmap_remaining_inds)) if np.sum(y_train) == 0 else np.ones(len(rmap_remaining_inds))
+            all_svm_proba.append(svm_pred_proba)
+        return all_svm_proba, all_remaining_inds, all_num_desired_in_first_batch
 
     @staticmethod
     def sigmoid(z):

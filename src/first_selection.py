@@ -263,7 +263,7 @@ class FirstBatchSelector:
                     "Strategy to plot must be one of the following: 'rmap', 'modularity', 'kmeans', 'rfc'."
                 )
 
-        fig, ax = plt.subplots(figsize=(3, 2))
+        fig, ax = plt.subplots(figsize=(2.45, 1.63))
         colors = sns.color_palette("colorblind", 5)
         if len(dicts_to_plot.keys()) > 0:
             for k, v in dicts_to_plot.items():
@@ -318,11 +318,11 @@ class FirstBatchSelector:
             loc = "upper left"
         else:
             loc = "upper right"
-        ax.legend(prop=fm.FontProperties(family="Arial", size=6), loc=loc)
+        ax.legend(prop=fm.FontProperties(family="Arial", size=7), loc=loc)
         ax.set_xlim(0, 2)
         ax.set_xticks(np.arange(0, 2.1, 0.5))
         ax.set_xticklabels(
-            np.arange(0, 2.1, 0.5), fontdict={"fontsize": 6, "fontfamily": "Arial"}
+            np.arange(0, 2.1, 0.5), fontdict={"fontsize": 7, "fontfamily": "Arial"}
         )
         ax.set_yticklabels([])
         ax.set_ylabel(ax.get_ylabel(), fontdict={"fontsize": 8, "fontfamily": "Arial"})
@@ -357,11 +357,11 @@ class FirstBatchSelector:
             max_cbar = 11
         cbar.ax.set_yticks(np.arange(0, max_cbar, 5))
         cbar.ax.set_yticklabels(
-            np.arange(0, max_cbar, 5), fontdict={"fontsize": 6, "fontfamily": "Arial"}
+            np.arange(0, max_cbar, 5), fontdict={"fontsize": 7, "fontfamily": "Arial"}
         )
         cbar.set_label(
             "Selection frequency",
-            fontdict={"fontsize": 6, "fontfamily": "Arial"},
+            fontdict={"fontsize": 8, "fontfamily": "Arial"},
             labelpad=5,
             y=0.5,
         )
@@ -371,20 +371,20 @@ class FirstBatchSelector:
             alternative="greater",
         )
         ax.text(
-            x=0.65,
-            y=0.1,
+            x=0.2,
+            y=0.75,
             s=f"Spearman={round(res.statistic, 3):.3f}",
             transform=ax.transAxes,
-            fontdict={"fontsize": 6, "fontfamily": "Arial"},
+            fontdict={"fontsize": 7, "fontfamily": "Arial"},
         )
         ax.set_ylim(0, 17)
         ax.set_yticklabels(
-            np.arange(0, 16, 5), fontdict={"fontsize": 6, "fontfamily": "Arial"}
+            np.arange(0, 16, 5), fontdict={"fontsize": 7, "fontfamily": "Arial"}
         )
         ax.set_ylabel(ax.get_ylabel(), fontdict={"fontsize": 8, "fontfamily": "Arial"})
         ax.set_xlabel(ax.get_xlabel(), fontdict={"fontsize": 8, "fontfamily": "Arial"})
         ax.set_xticklabels(
-            ax.get_xticklabels(), fontdict={"fontsize": 6, "fontfamily": "Arial"}
+            ax.get_xticklabels(), fontdict={"fontsize": 7, "fontfamily": "Arial"}
         )
         for axis in ["top", "bottom", "left", "right"]:
             ax.spines[axis].set_linewidth(1.5)

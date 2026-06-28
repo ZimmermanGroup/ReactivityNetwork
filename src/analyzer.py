@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from math import ceil
 import seaborn as sns
-import scikit_posthocs as sp
+# import scikit_posthocs as sp
 import os
 from rmap import *
 
@@ -171,6 +171,61 @@ class Analyzer:
                 dict_to_plot.append(sub_dict_to_plot)
             dict_to_plot = pd.concat(dict_to_plot, ignore_index=True)
         return dict_to_plot
+    
+    def draw_barplot(
+        self,
+        metric,
+        filename=None,
+        ymin=None,
+        ymax=None,
+        colordict=None,
+        consider_middle_only=False,
+    ):
+        fig, ax = plt.subplots(figsize=(6.5, 2.5))
+        dict_to_plot = self.prepare_score_dicts(
+            metric, consider_middle_only=consider_middle_only, checkpoint=False
+        )
+        ax.set_ylabel(metric.upper(), fontdict={"fontsize": 10, "fontfamily": "Arial"})
+        ax.set_yticklabels
+        sns.barplot(
+            data=dict_to_plot,
+            x="Target Core",
+            y="Score",
+            hue="Models",
+            ax=ax,
+            palette=colordict,
+            hue_order=self.list_of_evaluation_names,
+        )
+        for axis in ["top", "bottom", "left", "right"]:
+            ax.spines[axis].set_linewidth(1.5)
+        ax.legend(prop=fm.FontProperties(family="Arial", size=8), loc="lower right")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_yticks([round(x, 1) for x in np.arange(0.0, 1.01, 0.2)])
+        ax.set_yticklabels(
+            [round(x, 1) for x in np.arange(0.0, 1.01, 0.2)],
+            fontdict={"fontsize": 8, "fontfamily": "Arial"},
+        )
+        ax.set_xticks(np.arange(len(self.list_of_target_cores)))
+        ax.set_xticklabels(
+            [x + 1 for x in self.list_of_target_cores],
+            fontsize=8,
+            fontfamily="Arial",
+            fontweight="bold",
+        )
+        ax.set_xlabel(
+            "Target Core", fontdict={"fontsize": 10, "fontfamily": "Arial"}
+        )
+        if len(self.list_of_target_cores) > 1:
+            for x in range(len(self.list_of_target_cores)):
+                if x < len(self.list_of_target_cores) - 1:
+                    ax.axvline(x + 0.5, 0, 1, color="grey", linestyle="--", lw=0.5)
+        if metric == "roc_auc":
+            ax.axhline(0.5, 0, 1, color="grey", linestyle="--", lw=0.5, alpha=0.5)
+        if filename is None:
+            plt.show()
+        else:
+            plt.savefig(filename, dpi=300, bbox_inches="tight", format="svg")
+            plt.close(fig)
 
     def draw_swarmplot(
         self,
@@ -185,7 +240,7 @@ class Analyzer:
         dict_to_plot = self.prepare_score_dicts(
             metric, consider_middle_only=consider_middle_only, checkpoint=False
         )
-        ax.set_ylabel(metric.upper(), fontdict={"fontsize": 8, "fontfamily": "Arial"})
+        ax.set_ylabel(metric.upper(), fontdict={"fontsize": 10, "fontfamily": "Arial"})
         sns.boxplot(
             data=dict_to_plot,
             x="Target Core",
@@ -210,25 +265,25 @@ class Analyzer:
             ax.set_yticks([round(x, 1) for x in np.arange(0.0, 1.01, 0.2)])
             ax.set_yticklabels(
                 [round(x, 1) for x in np.arange(0.0, 1.01, 0.2)],
-                fontdict={"fontsize": 6, "fontfamily": "Arial"},
+                fontdict={"fontsize": 8, "fontfamily": "Arial"},
             )
         if len(self.list_of_target_cores) == 1:  # Then the xticks are the models
             ax.set_xticks(np.arange(len(self.list_of_evaluation_names)))
             ax.set_xticklabels(
-                self.list_of_evaluation_names, fontsize=6, fontfamily="Arial"
+                self.list_of_evaluation_names, fontsize=8, fontfamily="Arial"
             )
-            ax.set_xlabel("Models", fontdict={"fontsize": 8, "fontfamily": "Arial"})
+            ax.set_xlabel("Models", fontdict={"fontsize": 10, "fontfamily": "Arial"})
             sns.swarmplot(data=dict_to_plot, x="Models", y="Score", size=3)
         else:  # Then the xticks are the target cores
             ax.set_xticks(np.arange(len(self.list_of_target_cores)))
             ax.set_xticklabels(
                 [x + 1 for x in self.list_of_target_cores],
-                fontsize=6,
+                fontsize=8,
                 fontfamily="Arial",
                 fontweight="bold",
             )
             ax.set_xlabel(
-                "Target Core", fontdict={"fontsize": 8, "fontfamily": "Arial"}
+                "Target Core", fontdict={"fontsize": 10, "fontfamily": "Arial"}
             )
 
             if colordict is None:
@@ -258,7 +313,7 @@ class Analyzer:
                 )
         for axis in ["top", "bottom", "left", "right"]:
             ax.spines[axis].set_linewidth(1.5)
-        ax.legend(prop=fm.FontProperties(family="Arial", size=6), loc="lower right")
+        ax.legend(prop=fm.FontProperties(family="Arial", size=8), loc="lower right")
 
         if len(self.list_of_target_cores) > 1:
             for x in range(len(self.list_of_target_cores)):
@@ -277,7 +332,7 @@ class Analyzer:
             "roc_auc", consider_middle_only=True, checkpoint=True
         )
         for target_core in df_to_plot["Target Core"].unique():
-            fig, ax = plt.subplots(figsize=(3, 2))
+            fig, ax = plt.subplots(figsize=(2.7, 2))
             sns.lineplot(
                 df_to_plot[df_to_plot["Target Core"] == target_core],
                 x="Number of BB selections",
@@ -292,22 +347,22 @@ class Analyzer:
             ax.set_xticks(np.arange(5, 22, 5))
             ax.set_xticklabels(
                 [round(x, 0) for x in np.arange(5, 22, 5)],
-                fontsize=6,
+                fontsize=8,
                 fontfamily="arial",
             )
-            ax.set_xlabel("Number of selections", fontsize=8, fontfamily="arial")
+            ax.set_xlabel("Number of selections", fontsize=10, fontfamily="arial")
             ax.set_ylim(0, 1)
             ax.set_yticks(np.arange(0, 1.05, 0.2))
             ax.set_yticklabels(
                 [round(x, 1) for x in np.arange(0, 1.05, 0.2)],
-                fontsize=6,
+                fontsize=8,
                 fontfamily="arial",
             )
-            ax.set_ylabel("Portion of class-2", fontsize=8, fontfamily="arial")
+            ax.set_ylabel("Portion of class-2", fontsize=10, fontfamily="arial")
             if target_core == 3:
                 ax.legend(
                     bbox_to_anchor=(1.02, 0.95),
-                    prop=fm.FontProperties(family="Arial", size=6),
+                    prop=fm.FontProperties(family="Arial", size=8),
                 )
             else:
                 ax.get_legend().remove()
@@ -329,6 +384,7 @@ def main(
     colordict=None,
     type="swarm",
     consider_middle_only=False,
+    figsize_x=6.5
 ):
     """
     Parameters
@@ -353,20 +409,52 @@ def main(
                 filename=plot_name,
                 colordict=colordict,
                 consider_middle_only=consider_middle_only,
+                figsize_x=figsize_x
             )
     elif type == "line":
         plot_name = f"figures/eval_second/{plotname}"
         analyzer.draw_checkpoints(filename=plot_name, colordict=colordict)
+    elif type == "bar":
+        for metric in ["roc_auc", "auprc"]:
+            plot_name = f"figures/eval_second/{plotname}_{metric}.svg"
+            analyzer.draw_barplot(
+                metric,
+                filename=plot_name,
+                colordict=colordict,
+                consider_middle_only=consider_middle_only,
+            )
 
 
 if __name__ == "__main__":
     target_cores_to_draw_together = [0, 1, 3, 7, 8]
 
-    ######################## Figure 6 ########################
+    ######################## Figures 6, S26, S27 ########################
+    filenames_to_compare = [
+        "rmap_6_baseline.joblib",
+        "rmap_6_rfc_combined.joblib",
+        "rmap_6_rmap.joblib"
+    ]
+    evaluation_names = [
+        "Baseline",
+        "RFC",
+        "LP (Rmap)",
+    ] # For the main text
+    colors = sns.color_palette("colorblind", 8)
+    colordict = {
+        "LP (Rmap)":colors[1],
+        "RFC":colors[0],
+        "Baseline":colors[-1]
+    }
+    main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "Figure6C", colordict=colordict, type="line", consider_middle_only=True) # Also leads to S30
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "Figure6B", colordict=colordict, consider_middle_only=True) # Also leads to S26
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS27", colordict=colordict, consider_middle_only=False)
+    ########################################################################
+
+    ######################## Figure S28 ########################
     # filenames_to_compare = [
-    #     "rmap_6_baseline.joblib",
-    #     "rmap_6_rfc_combined.joblib",
-    #     "rmap_6_rmap.joblib"
+    #     "rmap_6_baseline_ntest0_nbootstrap1.joblib",
+    #     "rmap_6_rfc_combined_ntest0_nbootstrap1.joblib",
+    #     "rmap_6_rmap_ntest0_nbootstrap1.joblib"
     # ]
     # evaluation_names = [
     #     "Baseline",
@@ -379,50 +467,10 @@ if __name__ == "__main__":
     #     "RFC":colors[0],
     #     "Baseline":colors[-1]
     # }
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "Figure6C", colordict=colordict, type="line", consider_middle_only=True)
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "Figure6B", colordict=colordict, consider_middle_only=True)
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS28", colordict=colordict, consider_middle_only=False, type="bar")
     ########################################################################
 
-    ######################## Figure S24 ########################
-    filenames_to_compare = [
-        "rmap_6_baseline.joblib",
-        "rmap_6_rfc_combined.joblib",
-        "rmap_6_rmap.joblib",
-        "rmap_6_rmap_subgraph.joblib",
-    ]
-    evaluation_names = [
-        "Baseline",
-        "RFC",
-        "LP (Rmap)",
-        "LP (Rmap reactive cores only)",
-    ]  # For the main text
-    colors = sns.color_palette("colorblind", 8)
-    colordict = {
-        "LP (Rmap)": colors[1],
-        "LP (Rmap reactive cores only)": colors[2],
-        "RFC": colors[0],
-        "Baseline": colors[-1],
-    }
-    main(
-        target_cores_to_draw_together,
-        filenames_to_compare,
-        evaluation_names,
-        "FigureS24A",
-        colordict=colordict,
-        type="line",
-        consider_middle_only=True,
-    )
-    main(
-        target_cores_to_draw_together,
-        filenames_to_compare,
-        evaluation_names,
-        "FigureS24B",
-        colordict=colordict,
-        consider_middle_only=True,
-    )
-    ########################################################################
-
-    # ######################## Figure S20 ########################
+    # ######################## Figure S21 ########################
     # filenames_to_compare = [
     #     "uncertainty_6_rfc_target.joblib",
     #     "desc_cluster_6_rfc_target.joblib",
@@ -438,7 +486,7 @@ if __name__ == "__main__":
     # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS20", consider_middle_only=False)
     # ########################################################################
 
-    # ######################## Figure S21 ########################
+    # ######################## Figure S22 ########################
     # filenames_to_compare =[
     #     "rmap_6_rfc_combined.joblib",
     #     "desc_cluster_6_rfc_combined.joblib",
@@ -455,7 +503,7 @@ if __name__ == "__main__":
     # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS21", colordict=colordict, consider_middle_only=False)
     # ########################################################################
 
-    # ######################## Figure S22 ########################
+    # ######################## Figure S23 ########################
     # filenames_to_compare = [
     #     f"random_6_rmap.joblib",
     #     f"modularity_6_rmap.joblib",
@@ -469,7 +517,7 @@ if __name__ == "__main__":
     # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS22", consider_middle_only=False)
     # ########################################################################
 
-    # ######################## Figure S23 ########################
+    # ######################## Figure S24 ########################
     # filenames_to_compare = [
     #     f"rmap_6_rmap.joblib",
     #     f"rmap_6_gcn_ohe.joblib",
@@ -481,4 +529,28 @@ if __name__ == "__main__":
     #     "GCN (desc)",
     # ]
     # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS23", consider_middle_only=False)
+    # ########################################################################
+
+    # ######################## Figure S25 ########################
+    # filenames_to_compare = [
+    #     "rmap_6_rmap.joblib",
+    #     "rmap_6_rmap_tanimoto.joblib",
+    #     "rmap_6_knn.joblib",
+    #     "rmap_6_svm.joblib",
+    # ]  # For comparing label propagation and GCN performance
+    # evaluation_names = [
+    #     "LP (Rmap)",
+    #     "LP (Tanimoto)",
+    #     "kNN",
+    #     "SVM"
+    # ]
+    # colors = sns.color_palette("colorblind", 8)
+    # colordict = {
+    #     "LP (Rmap)":colors[1],
+    #     "LP (Tanimoto)":colors[2],
+    #     "kNN": colors[3],
+    #     "SVM": colors[4],
+    # }
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureSXX", consider_middle_only=False, colordict=colordict)
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureSXX_middle", consider_middle_only=True, colordict=colordict)
     # ########################################################################
