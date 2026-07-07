@@ -1,4 +1,4 @@
-# Navigating parallel library synthesis with a Reactivity Map
+# Navigating parallel library synthesis with a Reactivity Network
 
 Source code accompanying the paper to reproduce results. 
 Raw data of Suzuki reactions will be made available once the paper is published in a journal.
