@@ -1,0 +1,24 @@
+# Requirements for src/censoring_analysis.ipynb
+# Verified against Python 3.12.3. Standalone from rmap_env.yml (the main project's
+# conda env) — this notebook deliberately avoids src/dataset.py and the rest of the
+# pipeline, so it only needs the generic data/plotting/ML stack below, not
+# rdkit/pytorch/torch_geometric.
+#
+# Install with:
+#   python3.12 -m venv .venv && source .venv/bin/activate
+#   pip install -r src/requirements-censoring-analysis.txt
+
+numpy==1.26.4
+pandas==2.1.4
+scipy==1.11.4
+scikit-learn==1.4.1.post1
+matplotlib>=3.8,<4  # the exact apt-installed 3.6.3 used to verify this notebook conflicts
+                     # with matplotlib_inline pulled in fresh by ipykernel from PyPI
+
+# To open/run/re-execute the notebook itself
+jupyter
+notebook==6.4.12
+ipykernel==6.29.3
+nbconvert==6.5.3
+nbformat==5.9.1
+lxml_html_clean  # nbconvert 6.5.3 needs this split out of newer lxml releases
