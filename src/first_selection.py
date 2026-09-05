@@ -16,9 +16,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class FirstBatchSelector:
-    def __init__(self, target_core_ind):
+    def __init__(self, target_core_ind, aggregation="median", exclude_zeros=True):
         self.target_core_ind = target_core_ind
-        self.dataset = SuzukiDataset()
+        self.dataset = SuzukiDataset(exclude_zero_from_median=exclude_zeros, aggregation=aggregation)
         np.random.seed(42)
         self.test_bb_inds = np.sort(
             np.random.choice(
@@ -27,6 +27,7 @@ class FirstBatchSelector:
                 False,  # Not choosing the same building block multiple times
             )
         )
+        self.selected_pilot_threshold = None
         self.train_bb_inds = [
             x for x in range(len(self.dataset.bb_smiles)) if x not in self.test_bb_inds
         ]
@@ -113,7 +114,7 @@ class FirstBatchSelector:
         else:
             return np.mean(reactivity_array[centroid_inds])
 
-    def rmap_selection(self):
+    def rmap_selection(self, threshold=None):
         """Returns indices of SIX BBs selected using the Reactivity Map clustering.
 
         Parameters
@@ -125,16 +126,54 @@ class FirstBatchSelector:
         selected_inds : list of ints
             Indices of BBs selected to be tested in the first round.
         """
-        rmap_selected_inds = self.rmap.select_first_batch(
-            6, similarity_threshold=0.82  # Selecting 6 building blocks
-        )
+        if threshold is None :
+            rmap_selected_inds = self.rmap.select_first_batch(
+                6, similarity_threshold=0.82  # Selecting 6 building blocks
+            )
+        elif threshold=="cv" : # including a leave-one-core-out CV
+            rmap_selected_inds = self._rmap_leave_one_core_out_CV(n_select=6)
+            print(len(rmap_selected_inds))
+
         return rmap_selected_inds
+
+    def _rmap_leave_one_core_out_CV(self, n_select=6):
+        """Conducts leave-one-core-out-CV to determine the similarity_threshold rather than heuristically choosing a value."""
+        source_cores = self.rmap.source_core_inds
+        thresholds = [0.6, 0.65, 0.7, 0.75, 0.8, 0.82, 0.85]
+        # First check the thresholds actually return n_select BBs for the target.
+        thresholds_to_choose_from = deepcopy(thresholds)
+        for thresh in thresholds: 
+            if len(self.rmap.select_first_batch(n_select=n_select, similarity_threshold=thresh)) < n_select:
+                thresholds_to_choose_from.remove(thresh)
+        average_yield_class_difference = np.zeros((len(source_cores), len(thresholds_to_choose_from)))
+        print("Thresholds that return 6 BBs for the target core:", thresholds_to_choose_from)
+        for j, validation_core in enumerate(source_cores):
+            inner_rmap = ReactivityMap(
+                source_core_inds=[x for x in source_cores if x!= validation_core],
+                target_core_ind=validation_core,
+                test_bb_inds=self.test_bb_inds,
+                dataset=self.dataset
+            )
+            y_val = inner_rmap.target_reactivity_array
+            collected_pilot_inds = []
+            for k, pilot_threshold in enumerate(thresholds_to_choose_from):
+                cv_pilot_inds = inner_rmap.select_first_batch(n_select=n_select, similarity_threshold=pilot_threshold)
+                collected_pilot_inds.append(cv_pilot_inds)
+                avg_y_pilot = np.mean(y_val[cv_pilot_inds])
+                average_yield_class_difference[j, k] = np.abs(np.mean(y_val) - avg_y_pilot)
+        selected_pilot_threshold = thresholds_to_choose_from[np.argmin(np.mean(average_yield_class_difference, axis=0))]
+        self.selected_pilot_threshold = selected_pilot_threshold
+        return self.rmap.select_first_batch(n_select=n_select, similarity_threshold=selected_pilot_threshold) # collected_pilot_inds[thresholds.index(selected_pilot_threshold)]
+        
 
     def modularity_selection(self):
         """Returns indices of SIX BBs selected using network clustering by modularity through networkx."""
         bootstrap_similarity_matrix = self.rmap.get_similarity_matrix()
+        if self.selected_pilot_threshold is None :
+            _ = self._rmap_leave_one_core_out_CV()
+        threshold = self.selected_pilot_threshold
         bootstrap_adjacency_matrix = self.rmap._similarity_matrix_to_adjacency_matrix(
-            bootstrap_similarity_matrix, 0.82
+            bootstrap_similarity_matrix, threshold # 0.82
         )
         graph = nx.from_numpy_array(bootstrap_adjacency_matrix)
         modularity_sets = nx.community.greedy_modularity_communities(
@@ -242,7 +281,8 @@ class FirstBatchSelector:
         colors = sns.color_palette("colorblind", 8)
         color_dict = {
             "Actual": colors[4],
-            "RMap": colors[1],
+            "RNet(0.82)": colors[1],
+            "RNet(CV)":colors[3],
             "Descriptor KMeans": colors[2],
             "RFC Uncertainty": colors[0],
             "Network Modularity": colors[-1],
@@ -251,7 +291,9 @@ class FirstBatchSelector:
         dicts_to_plot = {}
         for strategy in strategies:
             if strategy == "rmap":
-                inds_to_plot.update({"RMap": self.rmap_selection()})
+                inds_to_plot.update({"RNet(0.82)": self.rmap_selection()})
+            elif strategy == "rmap_cv":
+                inds_to_plot.update({"RNet(CV)": self.rmap_selection(threshold="cv")})
             elif strategy == "modularity":
                 inds_to_plot.update({"Network Modularity": self.modularity_selection()})
             elif strategy == "kmeans":
@@ -397,22 +439,34 @@ class FirstBatchSelector:
 if __name__ == "__main__":
     context = input("Where in the manuscript will the figures go? ")
     if context == "main":
-        strategies = ["rmap", "rfc", "kmeans"]
+        strategies = ["rmap_cv", "rfc", "kmeans"] # "rmap", 
         cores = [3, 7, 10]
-        fignum = "Figure5"
+        fignum = "Figure5R_re"
     elif context == "si":
-        strategies = ["rmap", "modularity", "rfc", "kmeans"]
+        strategies = ["rmap_cv", "modularity", "rfc", "kmeans"] # "rmap"
         cores = [0, 1, 3, 7, 8, 9, 10, 12]
-        fignum = "FigureS18"
+        fignum = "FigureS19R_re"
+    elif context == "agg": # for different yield aggregations
+        cores = [3, 7, 10]
+        strategies = ["rmap_cv", "modularity", "rfc", "kmeans"] # "rmap"
+        fignum = "FigureSXR"
     else:
         raise ValueError("Entered value must be either main or si.")
 
     for core in cores:
-        first_selection = FirstBatchSelector(core)
-        first_selection.plot_avg_reactivity(
-            strategies, f"{fignum}_first_selection_core_{core+1}"
-        )
-        if context == "si":
-            first_selection.plot_overall_reactivity_vs_avg_entropy(
-                f"FigureS19_uncertainty_vs_reactivity_{core+1}"
+        if context != "agg":
+            first_selection = FirstBatchSelector(core)
+            first_selection.plot_avg_reactivity(
+                strategies, f"{fignum}_first_selection_core_{core+1}"
             )
+            if context == "si":
+                first_selection.plot_overall_reactivity_vs_avg_entropy(
+                    f"FigureS20R_uncertainty_vs_reactivity_{core+1}"
+                )
+        else :
+            for agg in ["median", "average", "maximum"]:
+                first_selection = FirstBatchSelector(core, aggregation=agg, exclude_zeros=False)
+                first_selection.plot_avg_reactivity(
+                    strategies, f"{fignum}_{agg.upper()}_first_selection_core_{core+1}"
+                )
+

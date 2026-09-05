@@ -8,6 +8,7 @@ from sklearn.svm import SVC
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV, LeaveOneOut
+from sklearn.metrics import average_precision_score
 import joblib
 import torch
 import torch.nn as nn
@@ -16,7 +17,12 @@ from torch_geometric.utils import index_to_mask
 from gcn import *
 import networkx as nx
 from scipy.stats import entropy
+from math import log
 
+NETWORK_THRESHOLD_VALUES = [0.6, 0.65, 0.7, 0.75, 0.8, 0.82, 0.85]
+TANIMOTO_THRESHOLD_VALUES = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]
+REACTIVE_CORE_INDS = [0, 1, 3, 7, 8]
+N_PILOTS = [4, 6, 8, 10, 12]
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Specify the evaluation to run.")
@@ -36,13 +42,15 @@ def parse_args():
         "--n1",
         default=6,
         type=int,
-        help="Number of boronics to sample for the first batch with the target halide.",
+        help="Number of boronics to sample for the first batch with the target halide.\
+              If -1, a leave-one-core-out CV is conducted to determine the number.",
     )
     parser.add_argument(
         "--n1_strategy",
         default="rmap",
         choices=[
             "rmap",
+            "rmap_cv",
             "modularity",
             "uncertainty",
             "desc_cluster",
@@ -50,6 +58,12 @@ def parse_args():
             "greedy",
         ],
         help="How to select the first batch of BBs to try with the new core.",
+    )
+    parser.add_argument(
+        "--n2_strategy",
+        default=None,
+        choices = [None, "cv", "predefined"],
+        help = "Whether to use a fixed network threshold for predictions or do a inner CV."
     )
     parser.add_argument(
         "--n1_random",
@@ -86,6 +100,34 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         help="Whether to use Tanimoto similarity, instead of reactivity similarity, to build the Reactivity Map for LP.",
     )
+    parser.add_argument(
+        "--lp_epsilon",
+        type=float,
+        default=0,
+        choices=[0, 0.001, 1],
+        help="""Value to add to the adjacency matrix for LP for numerical stability.
+            0 : Globally add 0.001 only when multiple components form.
+            0.001 : Globally add 0.001 regardless of number of components.
+            1 : Iterative connection of smaller components to larger components.
+            # -1 : no adjustment at all - to see whether multiple components arise without any treatment.
+        """
+    )
+    parser.add_argument(
+        "--aggregation",
+        type=str,
+        default="median",
+        choices = ["median", "average", "maximum"],
+        help="""Aggregation function for deciding the yield to represent substrate pairs that have been examined multiple times."""
+    )
+    parser.add_argument(
+        "--include_zero_from_median",
+        type=bool,
+        action=argparse.BooleanOptionalAction,
+        help=""" 
+            Include this flag when the aggregation should be done on ALL reactions including those that returned 0%. 
+            Use for all_median, all_average and maximum
+        """
+    )
     args = parser.parse_args()
     return args
 
@@ -98,7 +140,11 @@ class Evaluator:
         parser,
     ):
         self.parser = parser
-        self.dataset = SuzukiDataset()
+        if self.parser.include_zero_from_median :
+            exclude_zero_from_median = False
+        else :
+            exclude_zero_from_median = True
+        self.dataset = SuzukiDataset(aggregation=self.parser.aggregation, exclude_zero_from_median=exclude_zero_from_median)
         if self.parser.feature == "desc":
             self.result_filename = f"saved_results/{self.dataset}/{self.parser.target_core}/{self.parser.n1_strategy}_{self.parser.n1}_{self.parser.model}"
         else:
@@ -107,10 +153,20 @@ class Evaluator:
             self.result_filename += "_subgraph"
         elif self.parser.tanimoto :
             self.result_filename += "_tanimoto"
+        if self.parser.n2_strategy is not None :
+            self.result_filename += f"_{self.parser.n2_strategy}"
         if self.parser.n_test != 14 :
             self.result_filename += f"_ntest{self.parser.n_test}"
         if self.parser.n_bootstrap != 20 :
             self.result_filename += f"_nbootstrap{self.parser.n_bootstrap}"
+        if self.parser.lp_epsilon != 0 :
+            if self.parser.lp_epsilon > 0 :
+                self.result_filename += f"_eps{round(log(self.parser.lp_epsilon, 10), 1)}"
+            else :
+                self.result_filename += f"_eps{self.parser.lp_epsilon}"
+        if self.parser.include_zero_from_median :
+            self.result_filename += f"_includeZero_{self.parser.aggregation}"
+                
         self.result_filename += ".joblib"
         self._mkdir("saved_results")
         self._mkdir(f"saved_results/{self.dataset}")
@@ -126,6 +182,10 @@ class Evaluator:
         else:
             self.desired_class = 1
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # if self.parser.n1_strategy in ["rmap_cv", "rmap"]:
+        self.pilot_thresholds = []
+        self.n_pilots = []
 
     @staticmethod
     def _mkdir(path):
@@ -176,6 +236,9 @@ class Evaluator:
             "Number of desired reactivity class in first batch": [],
             "remaining_inds": [],  # Indices within the train_bb_inds of the remaining BBs after the first batch selection
         }
+        if self.parser.model == "rmap":
+            results["LP thresholds"] = []
+            results["num components"] = []
         if self.parser.model in ["gcn", "gcn_delta"]:
             self._mkdir(
                 f"saved_results/{self.dataset}/{self.parser.target_core}/gcn_params"
@@ -226,6 +289,8 @@ class Evaluator:
                     all_proba,
                     all_remaining_inds,  
                     all_num_desired_in_first_batch,
+                    used_thresholds,
+                    num_components
                 ) = self.evaluate_LP(train_bb_inds, test_bb_inds)
             elif self.parser.model == "knn":
                 (
@@ -281,6 +346,14 @@ class Evaluator:
                 )
                 results["remaining_inds"].append(remaining_inds)
 
+            if self.parser.model == "rmap":
+                results["LP thresholds"].append(used_thresholds[0])
+                results["num components"].append(num_components[0])
+
+        if self.parser.model == "rmap":
+            results["pilot_thresholds"] = self.pilot_thresholds
+            results["Number of pilots"] = self.n_pilots
+                
         joblib.dump(results, self.result_filename)
         return results
 
@@ -336,7 +409,7 @@ class Evaluator:
         selected_inds : list of ints
             Indices of building blocks in the training dataset selected as useful ones to test out against the target core.
         """
-        if self.parser.n1_strategy in ["rmap", "modularity"]:
+        if self.parser.n1_strategy in ["rmap", "rmap_cv", "modularity"]:
             rmap = ReactivityMap(
                 source_core_inds=None,
                 target_core_ind=self.target_core_ind,
@@ -352,6 +425,56 @@ class Evaluator:
                     )
                 ]  # Indices within the train_bb_inds
                 assert len(selected_inds) == 1
+                self.pilot_thresholds.append(0.82)
+                self.n_pilots.append(self.parser.n1)
+            elif self.parser.n1_strategy == "rmap_cv":
+                source_cores = rmap.source_core_inds
+                if self.parser.n1 == -1 :
+                    n_pilots = N_PILOTS
+                    network_threshold_values = NETWORK_THRESHOLD_VALUES
+                else :
+                    network_threshold_values = deepcopy(NETWORK_THRESHOLD_VALUES)
+                    n_pilots = [self.parser.n1]
+                    # First limit to thresholds that are able to produce this many pilots
+                    for thresh in NETWORK_THRESHOLD_VALUES :
+                        if len(rmap.select_first_batch(n_select=self.parser.n1, similarity_threshold=thresh)) < self.parser.n1 :
+                            network_threshold_values.remove(thresh)
+                # print(network_threshold_values)
+                average_yield_class_difference = np.zeros((len(source_cores), len(network_threshold_values), len(n_pilots)))
+                for j, validation_core in enumerate(source_cores):
+                    inner_rmap = ReactivityMap(
+                        source_core_inds=[x for x in source_cores if x!= validation_core],
+                        target_core_ind=validation_core,
+                        test_bb_inds=test_bb_inds,
+                        dataset=self.dataset,
+                        mask=None,
+                    )
+                    y_train = inner_rmap.source_reactivity_array
+                    y_val = inner_rmap.target_reactivity_array
+                    avg_y_val = np.mean(y_val)
+                    stored_cv_pilot_inds = {}
+                    for k, pilot_threshold in enumerate(network_threshold_values):
+                        for l, n_pilot in enumerate(n_pilots) :
+                            if self.parser.n1 == -1 :
+                                cv_pilot_inds = inner_rmap.select_first_batch(n_select=n_pilot, similarity_threshold=pilot_threshold)
+                                if len(cv_pilot_inds) < n_pilot :
+                                    average_yield_class_difference[j, k, l] = 999
+                                else :
+                                    stored_cv_pilot_inds.update({(k,l):cv_pilot_inds})
+                                    avg_y_pilot = np.mean(y_val[cv_pilot_inds])
+                                    average_yield_class_difference[j, k, l] = np.abs(avg_y_val - avg_y_pilot)
+                            else :
+                                cv_pilot_inds = inner_rmap.select_first_batch(n_select=n_pilot, similarity_threshold=pilot_threshold)
+                                stored_cv_pilot_inds.update({(k,l):cv_pilot_inds})
+                                avg_y_pilot = np.mean(y_val[cv_pilot_inds])
+                                average_yield_class_difference[j, k, l] = np.abs(avg_y_val - avg_y_pilot)
+                avg_avg_yield_class_diff = np.mean(average_yield_class_difference, axis=0)
+                selected_pilot_threshold_ind, selected_n_pilot_ind = np.unravel_index(np.argmin(avg_avg_yield_class_diff), avg_avg_yield_class_diff.shape)
+                # selected_inds = [stored_cv_pilot_inds[(selected_pilot_threshold_ind, selected_n_pilot_ind)]]
+                selected_inds = [rmap.select_first_batch(n_select=n_pilots[selected_n_pilot_ind], similarity_threshold=network_threshold_values[selected_pilot_threshold_ind])]
+                self.pilot_thresholds.append(network_threshold_values[selected_pilot_threshold_ind])
+                self.n_pilots.append(n_pilots[selected_n_pilot_ind])
+                    
             else:  # Community detection through modularity maximization
                 sim_mat = rmap.get_similarity_matrix()
                 adj_mat = rmap._similarity_matrix_to_adjacency_matrix(
@@ -433,6 +556,34 @@ class Evaluator:
                 pred_proba = np.ones(len(indices_of_interest))
         return pred_proba
 
+    def _check_num_components_and_adjust(self, adj, print_info=None, return_n_comp=False):
+        """ Checking the number of connected components of a network constructed by the given adjacency matrix.
+        Then treat the adjacency matrix by selected method as specified through the lp_epsilon parser argument.
+
+        Parameters
+        ----------
+        adj : np.ndarray of shape (n_BBs, n_BBs)
+            Adjacency matrix to construct the network.
+            
+        Returns
+        ------- 
+        """
+        G = nx.from_numpy_array(adj)
+        n_comp = nx.number_connected_components(G)
+        if (print_info is not None) and n_comp > 1:
+            print("Number of Connected Components", n_comp, print_info)
+        if self.parser.lp_epsilon == 0 : # Add 0.001 only if multiple components
+            if n_comp > 1 :
+                adj += 0.001  # To prevent division error
+        elif self.parser.lp_epsilon == 0.001: # Always add 0.001
+            adj += 0.001
+        elif self.parser.lp_epsilon == 1:
+            pass # no adjustment necessary
+        if return_n_comp :
+            return adj, n_comp
+        else :
+            return adj
+
     def evaluate_LP(self, train_bb_inds, test_bb_inds):
         """Makes predictions with label propagation on the specified evaluation setup.
 
@@ -462,6 +613,8 @@ class Evaluator:
         all_rmap_proba = []
         all_remaining_inds = []
         all_num_desired_in_first_batch = []
+        used_thresholds = []
+        num_components = []
         for rmap_selected_inds in all_selected_inds:
             rmap_remaining_inds = [
                 x for x in range(len(train_bb_inds)) if (x not in rmap_selected_inds)
@@ -473,16 +626,55 @@ class Evaluator:
                 )
             )
             if self.parser.tanimoto :
-                threshold=0.33
+                threshold_value_list = TANIMOTO_THRESHOLD_VALUES
             else :
-                threshold=0.82
-            adj = rmap._similarity_matrix_to_adjacency_matrix(
-                rmap.get_similarity_matrix(tanimoto=self.parser.tanimoto), threshold
-            )  # self.parser.threshold)
-            adj += 0.001  # To prevent division error
+                threshold_value_list = NETWORK_THRESHOLD_VALUES
 
-            def _kernel(X, y):
-                return adj
+            if self.parser.n2_strategy == "cv" :
+                scores_by_threshold = np.zeros((len(REACTIVE_CORE_INDS) - 1, len(threshold_value_list)))
+                for j, validation_core in enumerate([x for x in REACTIVE_CORE_INDS if x!=self.target_core_ind]) :
+                    inner_rmap = ReactivityMap(
+                        source_core_inds=[x for x in rmap.source_core_inds if x!= validation_core],
+                        target_core_ind=validation_core,
+                        test_bb_inds=test_bb_inds,
+                        dataset=self.dataset
+                    )
+                    for k, pred_threshold in enumerate(threshold_value_list):        
+                        if self.parser.lp_epsilon == 1 :
+                            iterative=True
+                        else :
+                            iterative=False
+                        adj = inner_rmap._similarity_matrix_to_adjacency_matrix(
+                            inner_rmap.get_similarity_matrix(tanimoto=self.parser.tanimoto), pred_threshold, iterative=iterative
+                        )
+                        adj = self._check_num_components_and_adjust(adj, print_info="Inner CV")
+                        def _kernel(X, y):
+                            return adj
+                        X_ohe = np.identity(len(inner_rmap.train_bb_inds))
+                        y = -1 * np.ones(len(inner_rmap.train_bb_inds))
+                        y[rmap_selected_inds] = inner_rmap.target_reactivity_array[
+                            rmap_selected_inds
+                        ]  # Simulating we obtained results of the first batch BBs with the new core
+                        y = self._binarize_reactivity_classes(
+                            y, inds_to_not_touch=list(np.where(y == -1)[0])
+                        )
+                        lp = LabelPropagation(kernel=_kernel, n_jobs=-1)
+                        lp.fit(X_ohe, y)
+                        raw_pred_proba = lp.predict_proba(X_ohe)
+                        lp_pred_proba = raw_pred_proba[:, -1]
+                        scores_by_threshold[j, k] = average_precision_score(
+                            self._binarize_reactivity_classes(
+                                inner_rmap.target_reactivity_array[rmap_remaining_inds]
+                            ), 
+                            lp_pred_proba.flatten()[rmap_remaining_inds]
+                        )
+                threshold_to_use = threshold_value_list[np.argmax(np.mean(scores_by_threshold, axis=0))]
+                # print(threshold_to_use)
+            elif self.parser.n2_strategy == "predefined":
+                if self.parser.tanimoto :
+                    threshold_to_use = 0.33
+                else :
+                    threshold_to_use = 0.82
 
             X_ohe = np.identity(len(train_bb_inds))
             y = -1 * np.ones(len(train_bb_inds))
@@ -494,15 +686,28 @@ class Evaluator:
             y = self._binarize_reactivity_classes(
                 y, inds_to_not_touch=list(np.where(y == -1)[0])
             )
-            lp = LabelPropagation(kernel=_kernel, n_jobs=-1)
+            if self.parser.lp_epsilon == 1 :
+                iterative=True
+            else :
+                iterative=False
+            outer_adj = rmap._similarity_matrix_to_adjacency_matrix(
+                rmap.get_similarity_matrix(tanimoto=self.parser.tanimoto), threshold_to_use, iterative=iterative
+            )  # self.parser.threshold)
+            outer_adj, num_comp = self._check_num_components_and_adjust(outer_adj, print_info="Outer CV", return_n_comp=True)
+            def _outer_kernel(X, y):
+                return outer_adj
+            lp = LabelPropagation(kernel=_outer_kernel, n_jobs=-1)
             lp.fit(X_ohe, y)
             raw_pred_proba = lp.predict_proba(X_ohe)
             lp_pred_proba = raw_pred_proba[:, -1]
             all_rmap_proba.append(lp_pred_proba[rmap_remaining_inds])
-        return all_rmap_proba, all_remaining_inds, all_num_desired_in_first_batch
+            used_thresholds.append(threshold_to_use)
+            num_components.append(num_comp)
+        return all_rmap_proba, all_remaining_inds, all_num_desired_in_first_batch, used_thresholds, num_components
 
     def evaluate_knn(self, train_bb_inds, test_bb_inds):
         """Makes predictions with kNN using the reactivity similarity matrix.
+        kNN does not need to go through inner CV because it does not apply a threshold for prediction.
 
         Parameters
         ----------
@@ -531,6 +736,7 @@ class Evaluator:
         all_remaining_inds = []
         all_num_desired_in_first_batch = []
         for rmap_selected_inds in all_selected_inds:
+            # print(rmap_selected_inds)
             rmap_remaining_inds = [
                 x for x in range(len(train_bb_inds)) if (x not in rmap_selected_inds)
             ]  # Indices within the train_bb_inds
@@ -596,6 +802,7 @@ class Evaluator:
         all_remaining_inds = []
         all_num_desired_in_first_batch = []
         for rmap_selected_inds in all_selected_inds:
+            # print(rmap_selected_inds)
             rmap_remaining_inds = [
                 x for x in range(len(train_bb_inds)) if (x not in rmap_selected_inds)
             ]  # Indices within the train_bb_inds
@@ -606,10 +813,58 @@ class Evaluator:
                     >= self.desired_class
                 )
             )
+            if self.parser.tanimoto :
+                threshold_value_list = TANIMOTO_THRESHOLD_VALUES
+            else :
+                threshold_value_list = NETWORK_THRESHOLD_VALUES
+            if self.parser.n2_strategy == "cv" :
+                scores_by_threshold = np.zeros((len(REACTIVE_CORE_INDS) - 1, len(threshold_value_list)))
+                for j, validation_core in enumerate([x for x in REACTIVE_CORE_INDS if x!=self.target_core_ind]) :
+                    inner_rmap = ReactivityMap(
+                        source_core_inds=[x for x in rmap.source_core_inds if x!= validation_core],
+                        target_core_ind=validation_core,
+                        test_bb_inds=test_bb_inds,
+                        dataset=self.dataset
+                    )
+                    for k, pred_threshold in enumerate(threshold_value_list):      
+                        if self.parser.lp_epsilon == 1 :
+                            iterative=True
+                        else :
+                            iterative=False
+                        
+                        inner_adj = inner_rmap._similarity_matrix_to_adjacency_matrix(
+                            inner_rmap.get_similarity_matrix(tanimoto=self.parser.tanimoto), pred_threshold, iterative=iterative
+                        )  # self.parser.threshold)
+                        inner_adj = self._check_num_components_and_adjust(inner_adj, print_info="Inner CV")
+                        # inner_adj += self.parser.lp_epsilon  # To prevent division error
+                        X_train = inner_adj[np.ix_(rmap_selected_inds, rmap_selected_inds)]
+                        y_train = self._binarize_reactivity_classes(
+                            inner_rmap.target_reactivity_array[
+                                rmap_selected_inds
+                            ]
+                        )
+                        if np.sum(y_train) not in [0, len(y_train)]:
+                            svm = SVC(kernel="precomputed", probability=True, random_state=42)
+                            svm.fit(X_train, y_train)
+                            X_test = inner_adj[np.ix_(rmap_remaining_inds, rmap_selected_inds)]
+                            inner_pred_proba = svm.predict_proba(X_test)[:, -1]
+                            scores_by_threshold[j, k] = average_precision_score(
+                                self._binarize_reactivity_classes(
+                                    inner_rmap.target_reactivity_array[rmap_remaining_inds]
+                                ), 
+                                inner_pred_proba.flatten()
+                            )
+                threshold_to_use = threshold_value_list[np.argmax(np.mean(scores_by_threshold, axis=0))]
+            elif self.parser.n2_strategy == "predefined":
+                if self.parser.tanimoto :
+                    threshold_to_use = 0.33
+                else :
+                    threshold_to_use = 0.82
+            
             adj = rmap._similarity_matrix_to_adjacency_matrix(
-                rmap.get_similarity_matrix(), 0.82
+                rmap.get_similarity_matrix(), threshold_to_use
             )  # self.parser.threshold)
-            adj += 0.001  # To prevent division error
+            adj = self._check_num_components_and_adjust(adj, print_info="Outer CV")
             X_train = adj[np.ix_(rmap_selected_inds, rmap_selected_inds)]
             y_train = self._binarize_reactivity_classes(
                 rmap.target_reactivity_array[
@@ -893,19 +1148,26 @@ class Evaluator:
             all_selected_inds = self.select_first_batch(
                 train_bb_inds, test_bb_inds, X_train=X_bb_train
             )
-        elif self.parser.n1_strategy == "rmap":
+        elif self.parser.n1_strategy in ["rmap", "rmap_cv"]:
             _ = rmap.get_similarity_matrix()
             all_selected_inds = self.select_first_batch(train_bb_inds, test_bb_inds)
         all_rfc_proba = []
         all_remaining_inds = []
         all_num_desired_in_first_batch = []
         for rfc_selected_inds in all_selected_inds:
+            # print(rfc_selected_inds)
             rfc_remaining_inds = [
                 x for x in range(len(train_bb_inds)) if x not in rfc_selected_inds
             ]
 
             X_target = target_array_tuple[0][train_bb_inds][rfc_selected_inds]
             y_target = target_array_tuple[1][train_bb_inds][rfc_selected_inds]
+            
+            #############################################################################
+            # Checking raw yield values when target_core = 0 and for the first evaluation
+            #############################################################################
+            # print(y_target)
+            # print([self.dataset.bb_smiles[train_bb_inds[x]] for x in rfc_selected_inds])
 
             all_remaining_inds.append(rfc_remaining_inds)
             all_num_desired_in_first_batch.append(
@@ -948,12 +1210,15 @@ class Evaluator:
         """Evaluating the baseline where predicted probabilities are computed as portions of cores in the source dataset that were in each reactivity class.
         Also, we assume that the first batch is greedily selected with highest averaging yields.
         """
-        if self.parser.n1_strategy == "rmap":
+        if self.parser.n1_strategy in ["rmap", "rmap_cv"]:
             rmap = ReactivityMap(
                 None, self.target_core_ind, test_bb_inds, self.dataset, mask=None
             )
             _ = rmap.get_similarity_matrix()
             all_selected_inds = self.select_first_batch(train_bb_inds, test_bb_inds)
+        # if self.parser.n1_strategy == "rmap":
+        #     _ = rmap.get_similarity_matrix()
+        #     all_selected_inds = self.select_first_batch(train_bb_inds, test_bb_inds)
             # print(all_selected_inds)
         # Getting the highest average-yielding building blocks
         elif self.parser.n1_strategy == "greedy":

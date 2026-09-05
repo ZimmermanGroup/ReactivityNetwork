@@ -195,6 +195,16 @@ class SuzukiDataset(Dataset):
         Whether the datasets will be used for building conventional regressors or classifiers.
     keepPhBr : bool
         Whether to include PhBr in the dataset. See dataset_analysis.ipynb and SI for details.
+    from_notebook : bool
+        Whether the dataset is being prepared from a Jupyter notebook or not. This is to account for the 
+        different relative paths to the data files.
+    save_excel : bool
+        Whether to save the aggregated dataset as an excel file. This is for checking the processed
+        dataset and is not necessary for the model training.
+    aggregation : str {'median', 'average', 'maximum'}
+        How to aggregate reactions that were conducted multiple times
+    exclude_zero_from_median : bool
+        Whether to exclude zero yields when calculating the median yield for substrate pairs with multiple entries.
     """
 
     def __init__(
@@ -203,6 +213,9 @@ class SuzukiDataset(Dataset):
         for_conventional_models=False,
         keepPhBr=False,
         from_notebook=False,
+        save_excel=False,
+        aggregation="median",
+        exclude_zero_from_median=True
     ):
         """Aggregates ALL the raw data dataframes into a single dataframe.
         1) Multiple yield values are aggregated such that
@@ -212,6 +225,9 @@ class SuzukiDataset(Dataset):
         """
         super().__init__(class_thresholds, for_conventional_models)
         self.keepPhBr = keepPhBr
+        self.save_excel = save_excel
+        self.aggregation = aggregation
+        self.exclude_zero_from_median = exclude_zero_from_median
 
         path8b = "data/008b_final_report.csv"
         if from_notebook:
@@ -320,28 +336,72 @@ class SuzukiDataset(Dataset):
                 (raw_df["reactant_1&smiles"] == halide_smiles)
                 & (raw_df["reactant_2&smiles"] == boronic_smiles)
             ]
+            row_indices_in_raw_df = tuple(sub_df.index)
+            plate_values = sub_df["plate"].values
             if sub_df.shape[0] == 1:
-                each_row.append(sub_df.values.tolist()[0])
+                aggregation_rule = "single entry"
+                portion_of_zeros = "n/a"
+                each_row.append(sub_df.values.tolist()[0] + [row_indices_in_raw_df, aggregation_rule])
                 if count1 == 0:
                     count1 += 1
             else:
-                if (halide_smiles, boronic_smiles) not in substrates_in_8_to_12:
-                    y_vals = sub_df["suzuki_product_CAD_yield"].to_numpy()
-                else:
-                    y_vals = sub_df[sub_df["plate"].isin(["010", "011", "012", "013"])][
-                        "suzuki_product_CAD_yield"
-                    ].to_numpy()
+                # if (halide_smiles, boronic_smiles) not in substrates_in_8_to_12:
+                y_vals = sub_df["suzuki_product_CAD_yield"].to_numpy()
+                # else:
+                #     y_vals = sub_df[sub_df["plate"].isin(["010", "011", "012", "013"])][
+                #         "suzuki_product_CAD_yield"
+                #     ].to_numpy()
                 pos_yvals = y_vals[np.where(y_vals > 0)]
                 if len(pos_yvals) == 0:
                     y = 0
+                    aggregation_rule = "all zero"
+                    portion_of_zeros = 1
                 else:
-                    y = np.median(pos_yvals)
-                row = list(sub_df.iloc[0, :-1].values) + [y]
+                    if self.exclude_zero_from_median: # taking median of nonzero yields
+                        y = np.median(pos_yvals)
+                        if len(np.where(y_vals == 0)[0]) > 0 :
+                            aggregation_rule = "nonzero median"
+                            portion_of_zeros = len(np.where(y_vals == 0)[0]) / len(y_vals)
+                        else :
+                            aggregation_rule = "median"
+                            portion_of_zeros = 0
+                    else : # including 0% yields
+                        # if len(np.where(y_vals == 0)[0]) > 0 :
+                        if self.aggregation == "average":
+                            y = np.mean(y_vals)
+                            aggregation_rule = "zero included mean"
+                        elif self.aggregation == "maximum":
+                            y = np.max(y_vals)
+                            aggregation_rule = "maximum"
+                        else :
+                            y = np.median(y_vals)
+                            aggregation_rule = "zero included median"
+                        portion_of_zeros = len(np.where(y_vals == 0)[0]) / len(y_vals)
+                            
+                row = list(sub_df.iloc[0, :-2].values) + [y, plate_values, row_indices_in_raw_df, aggregation_rule, portion_of_zeros] # :-1
                 if count2 == 0:
                     count2 += 1
                 each_row.append(row)
-        self.df = pd.DataFrame(each_row, columns=sub_df.columns).iloc[:, :-1]
-
+        if self.save_excel:
+            if not from_notebook:
+                root = ""
+            else :
+                root = "../"
+            if self.exclude_zero_from_median :
+                append = ""
+            else :
+                if self.aggregation == "maximum":
+                    append = "_maximum"
+                else :
+                    append = f"_zero_included_{self.aggregation}"
+            canonical_df = pd.DataFrame(
+                each_row, 
+                columns=list(sub_df.columns)+["Row indices in raw_df", "Aggregation Rule", "Portion of zeros"]
+            )
+            canonical_df.to_excel(
+                f"{root}data/aggregated_suzuki_dataset{append}.xlsx", index=False
+            )
+        self.df = pd.DataFrame([x[:-3] for x in each_row], columns=sub_df.columns) #.iloc[:, :-1]
         # Preparing boronic descriptor arrays
         if not from_notebook:
             boronics_descriptors = pd.read_csv("data/boronic_descriptors.csv")
