@@ -69,7 +69,7 @@ class Analyzer:
         else:
             sub_dict_to_plot = {
                 "Models": [],
-                "Reactivity sum": [],
+                "Number of hits": [],
                 "Number of BB selections": [],
                 "Score": [],
             }
@@ -95,10 +95,13 @@ class Analyzer:
                             dataset=SuzukiDataset(),
                             mask=None,
                         )
-                        source_reactivity_sum = np.argsort(
-                            np.sum(rmap.source_reactivity_array, axis=0)[remaining_inds]
+                        # source_reactivity_sum = np.argsort(
+                        #     np.sum(rmap.source_reactivity_array, axis=0)[remaining_inds]
+                        # )
+                        source_yield_sum = np.argsort(
+                            np.sum(rmap.source_yield_array, axis=0)[remaining_inds]
                         )
-                        inds_to_consider = [x for x in source_reactivity_sum[10:-10]]
+                        inds_to_consider = [x for x in source_yield_sum[10:-10]]
                         sub_dict_to_plot["Score"].append(
                             self.score_dict[metric](
                                 target[inds_to_consider],
@@ -120,12 +123,15 @@ class Analyzer:
                             [inds_to_consider[x] for x in proba_sorted[:20]],
                         ]
                         for num, top_set in enumerate(three_sets):
-                            sub_dict_to_plot["Reactivity sum"].append(
+                            sub_dict_to_plot["Number of hits"].append(
                                 np.sum(target[top_set])
-                                / np.sum(
-                                    np.sort(target[inds_to_consider])[-5 * (num + 1) :]
-                                )  # precision
                             )
+                            # sub_dict_to_plot["Reactivity sum"].append(
+                            #     np.sum(target[top_set])
+                            #     / np.sum(
+                            #         np.sort(target[inds_to_consider])[-5 * (num + 1) :]
+                            #     )  # precision
+                            # )
                             sub_dict_to_plot["Number of BB selections"].append(
                                 5 * (num + 1)
                             )
@@ -134,7 +140,11 @@ class Analyzer:
                         sub_dict_to_plot["Models"].append(eval_name)
 
             else:  # For random selections, first average the scores
-                result_df = pd.DataFrame(result_dict)
+                # for k , v in result_dict.items():
+                #     print(k, len(v))
+                copy_result_dict = {k:v for k, v in result_dict.items() if k not in ["LP thresholds", "num components", "pilot_thresholds", "Number of pilots"]}
+
+                result_df = pd.DataFrame(copy_result_dict)
                 for bootstrap_id in result_df["bootstrap_id"].unique():
                     targets = result_df[result_df["bootstrap_id"] == bootstrap_id][
                         "target"
@@ -161,9 +171,22 @@ class Analyzer:
         else:
             dict_to_plot = []
             for target_core in self.list_of_target_cores:
-                core_dict = self._process_single_target_core(
-                    target_core, metric, consider_middle_only, checkpoint
-                )
+                if consider_middle_only == "together":
+                    core_dict1 = self._process_single_target_core(
+                        target_core, metric, False, checkpoint
+                    )
+                    core_dict2 = self._process_single_target_core(
+                        target_core, metric, True, checkpoint
+                    )
+                    core_dict = {
+                        "Models":core_dict1["Models"] + core_dict2["Models"],
+                        "Score":core_dict1["Score"] + core_dict2["Score"],
+                        "Evaluation":["All BBs"]*len(core_dict1["Score"]) + ["Intermediate"]*len(core_dict2["Score"])
+                    }
+                else :
+                    core_dict = self._process_single_target_core(
+                        target_core, metric, consider_middle_only, checkpoint
+                    )
                 sub_dict_to_plot = pd.DataFrame(core_dict)
                 sub_dict_to_plot["Target Core"] = [
                     target_core
@@ -186,7 +209,7 @@ class Analyzer:
             metric, consider_middle_only=consider_middle_only, checkpoint=False
         )
         ax.set_ylabel(metric.upper(), fontdict={"fontsize": 10, "fontfamily": "Arial"})
-        ax.set_yticklabels
+        # ax.set_yticklabels
         sns.barplot(
             data=dict_to_plot,
             x="Target Core",
@@ -227,6 +250,158 @@ class Analyzer:
             plt.savefig(filename, dpi=300, bbox_inches="tight", format="svg")
             plt.close(fig)
 
+    def draw_two_barplots_together(
+        self,
+        metric,
+        filename=None,
+        ymin=None,
+        ymax=None,
+        colordict=None,
+    ):
+        fig, ax = plt.subplots(figsize=(6.7, 2.5), tight_layout=True, sharey=True, ncols=2)
+        dict_to_plot = self.prepare_score_dicts(
+            metric, consider_middle_only="together", checkpoint=False
+        )
+        df_to_plot = pd.DataFrame(dict_to_plot)
+        ax[0].set_ylabel(metric.upper(), fontdict={"fontsize": 10, "fontfamily": "Arial"})
+        for i, (eval_name, sub_df) in enumerate(df_to_plot.groupby("Evaluation")):
+            sns.barplot(
+                data=sub_df,
+                x="Target Core",
+                y="Score",
+                hue="Models",
+                ax=ax[i],
+                palette=colordict,
+                hue_order=self.list_of_evaluation_names,
+            )
+            for axis in ["top", "bottom", "left", "right"]:
+                ax[i].spines[axis].set_linewidth(1.5)
+            if i == 1:
+                ax[i].legend(prop=fm.FontProperties(family="Arial", size=8), loc="lower right")
+            ax[i].set_ylim(0.0, 1.0)
+            ax[i].set_yticks([round(x, 1) for x in np.arange(0.0, 1.01, 0.2)])
+            ax[i].set_yticklabels(
+                [round(x, 1) for x in np.arange(0.0, 1.01, 0.2)],
+                fontdict={"fontsize": 8, "fontfamily": "Arial"},
+            )
+            ax[i].set_xticks(np.arange(len(self.list_of_target_cores)))
+            ax[i].set_xticklabels(
+                [x + 1 for x in self.list_of_target_cores],
+                fontsize=8,
+                fontfamily="Arial",
+                fontweight="bold",
+            )
+            ax[i].set_xlabel(
+                "Target Core", fontdict={"fontsize": 10, "fontfamily": "Arial"}
+            )
+            if len(self.list_of_target_cores) > 1:
+                for x in range(len(self.list_of_target_cores)):
+                    if x < len(self.list_of_target_cores) - 1:
+                        ax[i].axvline(x + 0.5, 0, 1, color="grey", linestyle="--", lw=0.5)
+            if metric == "roc_auc":
+                ax[i].axhline(0.5, 0, 1, color="grey", linestyle="--", lw=0.5, alpha=0.5)
+        ax[0].get_legend().remove()
+        if filename is None:
+            plt.show()
+        else:
+            plt.savefig(filename, dpi=300, bbox_inches="tight", format="svg")
+            plt.close(fig)
+
+    def draw_two_swarmplots_together(
+        self,
+        metric,
+        filename=None,
+        ymin=None,
+        ymax=None,
+        colordict=None
+    ):
+        fig, ax = plt.subplots(figsize=(6.7, 2.5), tight_layout=True, sharey=True, ncols=2)
+        dict_to_plot = self.prepare_score_dicts(
+            metric, consider_middle_only="together", checkpoint=False
+        )
+        df_to_plot = pd.DataFrame(dict_to_plot)
+        ax[0].set_ylabel(metric.upper(), fontdict={"fontsize": 10, "fontfamily": "Arial"})
+        evaluation_linecolors = {
+            "All BBs":"black",
+            "Intermediate":"black"
+        }
+        evaluation_markers = {
+            "All BBs":"o",
+            "Intermediate":"^"
+        }
+        if colordict is None :
+            colordict = "viridis"
+        for i, (eval_name, sub_df) in enumerate(df_to_plot.groupby("Evaluation")):
+            ax[i].set_ylim(0.0, 1.0)
+            ax[i].set_yticks([round(x, 1) for x in np.arange(0.0, 1.01, 0.2)])
+            if i == 0:
+                ax[i].set_yticklabels(
+                    [round(x, 1) for x in np.arange(0.0, 1.01, 0.2)],
+                    fontdict={"fontsize": 8, "fontfamily": "Arial"},
+                )
+            line_color = evaluation_linecolors[eval_name]
+            sns.boxplot(
+                data=sub_df,
+                x="Target Core",
+                y="Score",
+                hue="Models",
+                whis=0.5,
+                width=0.8,
+                showcaps=True,
+                boxprops={"facecolor": "None"},
+                ax=ax[i],
+                palette=colordict,
+                dodge=True,
+                linewidth=0.5,
+                fliersize=0,
+                linecolor=line_color,
+                gap=0.15,
+                hue_order=self.list_of_evaluation_names,
+                legend=False,
+            )
+            sns.swarmplot(
+                data=sub_df,
+                x="Target Core",
+                y="Score",
+                hue="Models",
+                size=3,
+                ax=ax[i],
+                palette=colordict,
+                dodge=True,
+                hue_order=self.list_of_evaluation_names,
+                marker=evaluation_markers[eval_name]
+            )
+        
+            ax[i].set_xticks(np.arange(len(self.list_of_target_cores)))
+            ax[i].set_xticklabels(
+                [x + 1 for x in self.list_of_target_cores],
+                fontsize=8,
+                fontfamily="Arial",
+                fontweight="bold",
+            )
+            ax[i].set_xlabel(
+                "Target Core", fontdict={"fontsize": 10, "fontfamily": "Arial"}
+            )
+
+            for axis in ["top", "bottom", "left", "right"]:
+                ax[i].spines[axis].set_linewidth(1.5)
+        ax[1].legend(prop=fm.FontProperties(family="Arial", size=8), loc="lower right")
+        ax[0].get_legend().remove()
+
+        if len(self.list_of_target_cores) > 1:
+            for x in range(len(self.list_of_target_cores)):
+                if x < len(self.list_of_target_cores) - 1:
+                    for i in [0, 1]:
+                        ax[i].axvline(x + 0.5, 0, 1, color="grey", linestyle="--", lw=0.5)
+        if metric == "roc_auc":
+            for i in [0,1]:
+                ax[i].axhline(0.5, 0, 1, color="grey", linestyle="--", lw=0.5, alpha=0.5)
+        if filename is None:
+            plt.show()
+        else:
+            plt.savefig(filename, dpi=300, bbox_inches="tight", format="svg")
+            plt.close(fig)
+
     def draw_swarmplot(
         self,
         metric,
@@ -236,7 +411,7 @@ class Analyzer:
         colordict=None,
         consider_middle_only=False,
     ):
-        fig, ax = plt.subplots(figsize=(6.5, 2.5))
+        fig, ax = plt.subplots(figsize=(6.5, 2.5), tight_layout=True)
         dict_to_plot = self.prepare_score_dicts(
             metric, consider_middle_only=consider_middle_only, checkpoint=False
         )
@@ -336,7 +511,7 @@ class Analyzer:
             sns.lineplot(
                 df_to_plot[df_to_plot["Target Core"] == target_core],
                 x="Number of BB selections",
-                y="Reactivity sum",
+                y="Number of hits",
                 hue="Models",
                 marker="o",
                 ax=ax,
@@ -404,73 +579,66 @@ def main(
     if type == "swarm":
         for metric in ["roc_auc", "auprc"]:
             plot_name = f"figures/eval_second/{plotname}_{metric}.svg"
-            analyzer.draw_swarmplot(
-                metric,
-                filename=plot_name,
-                colordict=colordict,
-                consider_middle_only=consider_middle_only,
-                figsize_x=figsize_x
-            )
+            if consider_middle_only == "together":
+                analyzer.draw_two_swarmplots_together(
+                    metric,
+                    filename=plot_name,
+                    colordict=colordict
+                )
+            else :
+                analyzer.draw_swarmplot(
+                    metric,
+                    filename=plot_name,
+                    colordict=colordict,
+                    consider_middle_only=consider_middle_only,
+                    # figsize_x=figsize_x
+                )
     elif type == "line":
         plot_name = f"figures/eval_second/{plotname}"
         analyzer.draw_checkpoints(filename=plot_name, colordict=colordict)
     elif type == "bar":
         for metric in ["roc_auc", "auprc"]:
             plot_name = f"figures/eval_second/{plotname}_{metric}.svg"
-            analyzer.draw_barplot(
-                metric,
-                filename=plot_name,
-                colordict=colordict,
-                consider_middle_only=consider_middle_only,
-            )
+            if consider_middle_only == "together":
+                analyzer.draw_two_barplots_together(
+                    metric,
+                    filename=plot_name,
+                    colordict=colordict
+                )
+            else :
+                analyzer.draw_barplot(
+                    metric,
+                    filename=plot_name,
+                    colordict=colordict,
+                    consider_middle_only=consider_middle_only,
+                )
 
 
 if __name__ == "__main__":
     target_cores_to_draw_together = [0, 1, 3, 7, 8]
 
-    ######################## Figures 6, S26, S27 ########################
-    filenames_to_compare = [
-        "rmap_6_baseline.joblib",
-        "rmap_6_rfc_combined.joblib",
-        "rmap_6_rmap.joblib"
-    ]
-    evaluation_names = [
-        "Baseline",
-        "RFC",
-        "LP (Rmap)",
-    ] # For the main text
-    colors = sns.color_palette("colorblind", 8)
-    colordict = {
-        "LP (Rmap)":colors[1],
-        "RFC":colors[0],
-        "Baseline":colors[-1]
-    }
-    main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "Figure6C", colordict=colordict, type="line", consider_middle_only=True) # Also leads to S30
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "Figure6B", colordict=colordict, consider_middle_only=True) # Also leads to S26
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS27", colordict=colordict, consider_middle_only=False)
-    ########################################################################
-
-    ######################## Figure S28 ########################
+    ######################## Figures 6B ########################
     # filenames_to_compare = [
-    #     "rmap_6_baseline_ntest0_nbootstrap1.joblib",
-    #     "rmap_6_rfc_combined_ntest0_nbootstrap1.joblib",
-    #     "rmap_6_rmap_ntest0_nbootstrap1.joblib"
+    #     "rmap_cv_6_baseline.joblib",
+    #     "rmap_cv_6_rfc_combined.joblib",
+    #     "rmap_cv_6_rmap_cv.joblib"
     # ]
     # evaluation_names = [
     #     "Baseline",
     #     "RFC",
-    #     "LP (Rmap)",
+    #     "LP",
     # ] # For the main text
     # colors = sns.color_palette("colorblind", 8)
     # colordict = {
-    #     "LP (Rmap)":colors[1],
+    #     "LP":colors[1],
     #     "RFC":colors[0],
     #     "Baseline":colors[-1]
     # }
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS28", colordict=colordict, consider_middle_only=False, type="bar")
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "Figure6B_r1", colordict=colordict, consider_middle_only="together") # Also leads to S30
     ########################################################################
 
-    # ######################## Figure S21 ########################
+        
+    ######################### Figure S21 ########################
     # filenames_to_compare = [
     #     "uncertainty_6_rfc_target.joblib",
     #     "desc_cluster_6_rfc_target.joblib",
@@ -483,74 +651,148 @@ if __name__ == "__main__":
     #     "Uncertainty+Combined",
     #     "Desc cluster+Combined",
     # ]
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS20", consider_middle_only=False)
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS21_r1", colordict=None, consider_middle_only=False)
     # ########################################################################
 
     # ######################## Figure S22 ########################
     # filenames_to_compare =[
-    #     "rmap_6_rfc_combined.joblib",
+    #     "rmap_cv_6_rfc_combined.joblib",
     #     "desc_cluster_6_rfc_combined.joblib",
     # ]
     # evaluation_names = [
-    #     "Rmap",
-    #     "k-means"
+    #     "RNet",
+    #     "Desc cluster"
     # ]
     # colors = sns.color_palette("colorblind", 8)
     # colordict = {
-    #     "Rmap":colors[1],
-    #     "k-means":colors[0]
+    #     "RNet":colors[1],
+    #     "Desc cluster":colors[0]
     # }
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS21", colordict=colordict, consider_middle_only=False)
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS22_r1", colordict=colordict, consider_middle_only=False)
     # ########################################################################
 
     # ######################## Figure S23 ########################
     # filenames_to_compare = [
-    #     f"random_6_rmap.joblib",
-    #     f"modularity_6_rmap.joblib",
-    #     f"rmap_6_rmap.joblib",
+    #     f"random_6_rmap_predefined.joblib",
+    #     f"modularity_6_rmap_predefined.joblib",
+    #     f"rmap_6_rmap_predefined.joblib",
     # ]  # For comparing selection methods on label propagation performance
     # evaluation_names = [
     #     "Random",
     #     "Modularity",
-    #     "Rmap",
+    #     "RNet",
     # ]
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS22", consider_middle_only=False)
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS23", consider_middle_only=False)
     # ########################################################################
 
     # ######################## Figure S24 ########################
     # filenames_to_compare = [
-    #     f"rmap_6_rmap.joblib",
-    #     f"rmap_6_gcn_ohe.joblib",
-    #     f"rmap_6_gcn.joblib",
+    #     f"rmap_cv_6_rmap_predefined.joblib",
+    #     f"rmap_cv_6_gcn_ohe.joblib",
+    #     f"rmap_cv_6_gcn.joblib",
     # ]  # For comparing label propagation and GCN performance
     # evaluation_names = [
     #     "LP",
     #     "GCN (OHE)",
     #     "GCN (desc)",
     # ]
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS23", consider_middle_only=False)
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS24", consider_middle_only="together")
     # ########################################################################
 
-    # ######################## Figure S25 ########################
+    ######################## Figure S25 ########################
     # filenames_to_compare = [
-    #     "rmap_6_rmap.joblib",
-    #     "rmap_6_rmap_tanimoto.joblib",
-    #     "rmap_6_knn.joblib",
-    #     "rmap_6_svm.joblib",
+    #     "rmap_cv_6_rmap_cv.joblib",
+    #     "rmap_6_rmap_cv.joblib",
+    #     "rmap_6_rmap_predefined.joblib"
+    # ]
+    # evaluation_names = [
+    #     "Both CV",
+    #     "Prediction CV",
+    #     "No CV",
+    # ] # For the main text
+    # colors = sns.color_palette("colorblind", 8)
+    # colordict = {
+    #     "Both CV":colors[1],
+    #     "Prediction CV":colors[0],
+    #     "No CV":colors[-1]
+    # }
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureSXXX_CVcomparison", colordict=colordict, consider_middle_only="together") # Also leads to S30
+    
+    ######################## Figure S26 ########################
+    # filenames_to_compare = [
+    #     "rmap_cv_6_rmap_cv.joblib",
+    #     "rmap_cv_6_rmap_tanimoto_cv.joblib",
+    #     "rmap_cv_6_knn_cv.joblib",
+    #     "rmap_cv_6_svm_cv.joblib",
     # ]  # For comparing label propagation and GCN performance
     # evaluation_names = [
-    #     "LP (Rmap)",
+    #     "LP (RNet)",
     #     "LP (Tanimoto)",
     #     "kNN",
     #     "SVM"
     # ]
     # colors = sns.color_palette("colorblind", 8)
     # colordict = {
-    #     "LP (Rmap)":colors[1],
+    #     "LP (RNet)":colors[1],
     #     "LP (Tanimoto)":colors[2],
     #     "kNN": colors[3],
     #     "SVM": colors[4],
     # }
     # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureSXX", consider_middle_only=False, colordict=colordict)
-    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureSXX_middle", consider_middle_only=True, colordict=colordict)
-    # ########################################################################
+    ########################################################################
+
+    ######################## Figure S34 - entire dataset ########################
+    # filenames_to_compare = [
+    #     "rmap_cv_6_baseline_ntest0_nbootstrap1.joblib",
+    #     "rmap_cv_6_rfc_combined_ntest0_nbootstrap1.joblib",
+    #     "rmap_cv_6_rmap_cv_ntest0_nbootstrap1.joblib"
+    # ]
+    # evaluation_names = [
+    #     "Baseline",
+    #     "RFC",
+    #     "LP (Rmap)",
+    # ] # For the main text
+    # colors = sns.color_palette("colorblind", 8)
+    # colordict = {
+    #     "LP (Rmap)":colors[1],
+    #     "RFC":colors[0],
+    #     "Baseline":colors[-1]
+    # }
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS28_EntireDataset", colordict=colordict, type="bar", consider_middle_only="together")
+
+    ######################## Figure S40 - aggregation scheme analysis ########################
+    # for agg in ["median", "average", "maximum"]:
+    #     filenames_to_compare = [
+    #         f"rmap_cv_6_baseline_includeZero_{agg}.joblib",
+    #         f"rmap_cv_6_rmap_cv_includeZero_{agg}.joblib",
+    #     ]
+    #     if agg == "maximum":
+    #         lp_label = f"LP ({agg})"
+    #     else :
+    #         lp_label = f"LP (all {agg})"
+    #     evaluation_names = [
+    #         "Baseline",
+    #         lp_label,
+    #     ]
+    #     colors = sns.color_palette("colorblind", 8)
+    #     colordict = {
+    #         "Baseline":colors[1],
+    #         lp_label:colors[2],
+    #     }
+    #     main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, f"FigureS_all{agg}", consider_middle_only="together", colordict=colordict)
+
+    ######################## Figure SX ########################
+    # filenames_to_compare = [
+    #     "rmap_6_rmap_predefined.joblib",
+    #     "rmap_6_rmap_predefined_eps0.joblib",
+    # ]  # Epsilon sensitivity analysis
+    # evaluation_names = [
+    #     "eps=0.001",
+    #     "eps=0",
+    # ]
+    # colors = sns.color_palette("colorblind", 8)
+    # colordict = {
+    #     "eps=0.001":colors[1],
+    #     "eps=0":colors[2],
+    # }
+    # main(target_cores_to_draw_together, filenames_to_compare, evaluation_names, "FigureS_eps", consider_middle_only=False, colordict=colordict)

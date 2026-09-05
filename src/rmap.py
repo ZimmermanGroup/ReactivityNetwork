@@ -4,6 +4,7 @@ from copy import deepcopy
 import os
 from dataset import *
 from math import log, e
+import networkx as nx
 
 
 class ReactivityMap:
@@ -455,26 +456,27 @@ class ReactivityMap:
         nodes_df["Reactivity"] = nodes_df.iloc[
             :, 2 : 2 + len(self.source_core_inds)
         ].sum(axis=1)
+        nodes_df["Target core"] = self.target_reactivity_array
         edges_df = pd.DataFrame(edges)
 
         if gephi_filename is not None:
-            if not os.path.exists("gephi_excels/"):
-                os.mkdir("gephi_excels/")
+            # if not os.path.exists("gephi_excels/"):
+            #     os.mkdir("gephi_excels/")
             nodes_df.to_excel(
-                f"gephi_excels/{self.dataset.__str__()}_nodes_"
-                + gephi_filename
-                + ".xlsx",
+                # f"gephi_excels/{self.dataset.__str__()}_nodes_"
+                gephi_filename
+                + "_nodes.xlsx",
                 index=False,
             )
             edges_df.to_excel(
-                f"gephi_excels/{self.dataset.__str__()}_edges_"
-                + gephi_filename
-                + ".xlsx",
+                # f"gephi_excels/{self.dataset.__str__()}_edges_"
+                gephi_filename
+                + "_edges.xlsx",
                 index=False,
             )
         # return self.similarity_matrix
 
-    def _similarity_matrix_to_adjacency_matrix(self, sim_mat, threshold):
+    def _similarity_matrix_to_adjacency_matrix(self, sim_mat, threshold, iterative=False):
         """The reactivity similarity values themselves are not fully useful to formulate a network of building blocks.
         So we apply a threshold that defines a similarity value over this can be meaningfully thought as similar in terms of reactivity.
         After applying this, some nodes can be left alone. We connect these to one node that has the highest similarity value.
@@ -485,6 +487,9 @@ class ReactivityMap:
             Reactivity similarity matrix.
         threshold : float
             Value to determine the presence of an edge in the reactivity map.
+        iterative : bool
+            Evaluate whether the resulting adjacency matrix yields a single connected component.
+            If not, connect nodes in the smaller components to the larger ones by retrieving the edge with maximum similarity.
 
         Returns
         -------
@@ -503,6 +508,21 @@ class ReactivityMap:
                 largest_inds = sim_mat[outlier] == np.max(sim_mat[outlier])
                 adj_mat[outlier, largest_inds] = np.max(sim_mat[outlier])
                 adj_mat[largest_inds, outlier] = np.max(sim_mat[outlier])
+        if iterative:
+            G = nx.from_numpy_array(adj_mat)
+            while nx.number_connected_components(G) > 1 :
+                count = 2
+                components = [sorted(c) for c in nx.connected_components(G)]
+                for c_ind, c in enumerate(components[1:]) :
+                    prior_components = []
+                    for x in components[:c_ind+1] :
+                        prior_components += list(x)
+                    for ind in c :
+                        next_largest_inds = sim_mat[ind] == np.max(sim_mat[ind, prior_components])
+                        adj_mat[ind, next_largest_inds] = np.unique(sim_mat[ind])[-1*count]
+                        adj_mat[next_largest_inds, ind] = np.unique(sim_mat[ind])[-1*count]
+                count += 1
+                G = nx.from_numpy_array(adj_mat)
         return adj_mat
 
     def select_first_batch(

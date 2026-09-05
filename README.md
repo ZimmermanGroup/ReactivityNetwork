@@ -1,7 +1,6 @@
 # Navigating parallel library synthesis with a Reactivity Network
 
 Source code accompanying the paper to reproduce results. 
-Raw data of Suzuki reactions will be made available once the paper is published in a journal.
 
 Create the conda environment used for this work by running `conda env create -f rmap_env.yml`.  
 Additionally, `pytorch` and `torch_geometric` were installed using pip. Versions used were 2.3.1 and 2.5.3, respectively.    
@@ -31,11 +30,11 @@ and then restart vscode.
 2. **dataset_analysis.ipynb**
 
     Notebook that conducts exploratory data analysis as described in Figure 2 and Section 4 of the SI.  
-    *Generates Table S1 and Figures S5–S6 (and Figure 2D)*
+    *Generates Table S1 and Figures S5–S7, S37 and S41 (and Figure 2D)*
 
 3. **feature_comparison.ipynb**
 
-    Notebook that compares predictivity of various features, including adversarial controls, as described in pages S18–S19 of the SI.  
+    Notebook that compares predictivity of various features, including adversarial controls, as described in pages S20–S21 of the SI.  
     A toy problem was used to compare the features:  
     * use one of the highly reactive cores as a target
     * randomly select 10 BBs and obtain their results with the target core
@@ -87,12 +86,13 @@ and then restart vscode.
     |-------|-----------------|------------------|
     |RFC|`n_estimators`$\in${10,20,50} <br> `max_depth`$\in${2,3,5,None} | 5-fold CV, Accuracy|
     |GCN|`hidden_size1`$\in${10,20,30,40} <br> `hidden_size2`$\in${0,5,10} <br> `learning_rate`$\in${0.0001,0.001,0.01} <br> `weight_decay`=0 | optuna, Binary Cross Entropy|
-    |LP|`reactivity similarity threshold`=0.82 | n/a |
-    |LP (Tanimoto)|`Tanimoto similarity threshold`=0.33 <br> `nbits`=2048, `rad`=3 <br> count Morgan Fingerprint | n/a| 
+    |LP|`network edge threshold`$\in${0.6, 0.65, 0.7, 0.75, 0.8, 0.82, 0.85} | Leave-one-core-out CV <br> pilot BB selection: average BB yield class <br> LP network: average precision |
+    |LP (Tanimoto)|`Tanimoto similarity threshold`$\in${0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4} <br> `nbits`=2048, `rad`=3 <br> count Morgan Fingerprint | Leave-one-core-out CV, average precision| 
     |KNN|`n_neighbors`$\in${1,2,3}|leave-one-out CV, accuracy|
     |SVM|`reactivity similarity threshold`=0.82 | n/a |  
 
-    Of note is that when RFCs are trained on the combined source and target data, we emphasize the target data with a weight 3 times that of the source.  
+    Of note is that when RFCs are trained on the combined source and target data, we emphasize the target data with a weight 3 times that of the source.
+    Also, for selecting pilot BBs with the Reactivity Network, if a threshold value does not lead to sufficient number of pilot BBs, they are not considered. 
     Although all commands necessary to reproduce this paper is included in `run_all.py`, below is an example command that runs  
     label propagation on the Reactivity Map after initial selection through Reactivity Map clustering when the target core is 1:  
     ```python
@@ -112,7 +112,7 @@ and then restart vscode.
 8. **analyzer.py**
 
     Must be run AFTER running `run_all.py`. 
-    Plotting code for analyzing the quality of the second selections, *generating Figures 6B–6C and Figures S21–S28 and S30.*  
+    Plotting code for analyzing the quality of the second selections, *generating Figure 6B and Figures S21–S27, S34 and S40.*  
     Code block that leads to each figure is clearly marked towards the bottom of the script.  
     Simply un-comment the portion you are interested in and run:  
     ```python
@@ -122,9 +122,14 @@ and then restart vscode.
 9. **second_selection.ipynb**
 
     Specific analyses of the quality of the prediction of remaining BBs.  
-    *Generates Figure S31 and extracts the selected examples in Figure 6D*
+    *Generates Figures S25C–25D, S28–S32, S36 and S42, Table S2 and extracts the selected examples in Figure 6D. Recall(LP - RFC) noted in the Summary is computed here as well.*
 
 10. **explore_initialBB_thresholds.ipynb**
 
     Evaluates the sensitivity of the second-step predictions to the number of pilot BBs and reactivity similarity threshold.  
-    *Generates Figures S18 and S29* 
+    *Generates Figures S18A and S33*
+
+11. **aggregation_sensitivity.ipynb **
+
+    Evaluates how yield aggregation of reactions conducted multiple times impact downstream tasks.  
+    *Generates Figure S38 and information in Tables S4–S5.*

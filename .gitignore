@@ -1,4 +1,11 @@
 .DS_Store
+src/cv_practice.ipynb
+src/run_all_new.py
+figures/*
+saved_results/previous_results/*
+data/gephi_files/previous/*
+data/gephi_files/*.svg
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
